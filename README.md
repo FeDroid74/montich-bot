@@ -1,13 +1,24 @@
 # Montich Bot
 
-Stage 2 bootstrap for the Telegram bot project.
+Stage 3 introduces the base application architecture for the Telegram bot.
 
 ## Included in this stage
 
-- Node.js + TypeScript project scaffold
-- Telegraf dependency
-- Basic environment loading
-- Minimal bot entrypoint with `/start` and `/health`
+- Modular app bootstrap layer
+- Dedicated bot handlers and keyboards
+- Centralized configuration loading and validation
+- Database preparation layer with planned domain models
+- `/health` output that reports runtime environment and database configuration state
+
+## Project structure
+
+```text
+src/
+  app/
+  bot/
+  config/
+  database/
+```
 
 ## Commands
 
@@ -19,4 +30,6 @@ npm run dev
 
 ## Environment
 
-Copy `.env.example` to `.env` and fill in at least `BOT_TOKEN` before running the bot.
+Copy `.env.example` to `.env` and fill in at least `BOT_TOKEN`.
+
+`DATABASE_URL` is optional at this stage. When omitted, the bot starts with the database layer marked as not configured.
