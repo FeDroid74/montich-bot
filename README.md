@@ -1,12 +1,13 @@
 # Montich Bot
 
-Stage 6 adds vocabulary import from a plain text dictionary file.
+Stage 7 adds the first working learning flow from the PostgreSQL vocabulary.
 
 ## Included in this stage
 
-- TXT dictionary parser for `сербское слово - русский перевод`
-- PostgreSQL import script for admin vocabulary
-- Import report with inserted, duplicated, and skipped rows
+- Learning card flow from the imported vocabulary
+- User upsert on interaction with the bot
+- Saving word progress after each answer
+- Progress summary in the `Мой прогресс` section
 
 ## Commands
 
@@ -18,19 +19,12 @@ npm run db:migrate
 npm run words:import -- /absolute/path/to/dictionary.txt
 ```
 
-## Supported TXT format
+## Learning flow
 
-Each non-empty line should contain a Serbian entry and a Russian translation separated by `-`, `–`, or `—`.
+1. Open the bot in Telegram.
+2. Press `Учить сербский`.
+3. Press `Показать перевод`.
+4. Mark the card with `Знаю` or `Повторить`.
+5. The bot sends the next card automatically.
 
-Examples:
-
-```text
-Izbor - выбор
-Izvinite sta kasnim - извините за опоздание
-Razlika (!) - отличие/разница
-Zahtevani [hardver] - нужное/необходимое [оборудование]
-```
-
-Blank lines are ignored.
-
-Lines without a translation are skipped and reported.
+`Мой прогресс` shows a short summary based on `user_word_progress`.
