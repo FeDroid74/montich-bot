@@ -1,10 +1,10 @@
 import type { Context, Telegraf } from "telegraf";
 import type { AppContext } from "../../app/context.js";
 import { LearningService, type LearningAnswer, type LearningCard } from "../../learning/service.js";
-import { createAnswerKeyboard, createRevealTranslationKeyboard } from "../keyboards/learning.js";
+import { createAwaitingTranslationKeyboard, createKnowledgeChoiceKeyboard } from "../keyboards/learning.js";
 import { MAIN_MENU_BUTTONS, createMainMenuKeyboard } from "../keyboards/main-menu.js";
 
-const SESSION_CARD_LIMIT = 7;
+const SESSION_CARD_LIMIT = 10;
 
 interface LearningSession {
   totalCards: number;
@@ -14,9 +14,14 @@ interface LearningSession {
   startedAt: number;
 }
 
+interface ActiveLearningCard {
+  card: LearningCard;
+  expectsTextAnswer: boolean;
+}
+
 export function registerSystemHandlers(bot: Telegraf, context: AppContext): void {
   const learningService = new LearningService(context.database, context.config.bot.adminTelegramId);
-  const activeCards = new Map<number, LearningCard>();
+  const activeCards = new Map<number, ActiveLearningCard>();
   const activeSessions = new Map<number, LearningSession>();
 
   bot.start(async (ctx) => {
@@ -51,7 +56,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     activeCards.delete(ctx.from.id);
 
     await ctx.reply(
-      `Начинаем мини-сессию: ${SESSION_CARD_LIMIT} карточек. Пиши перевод сообщением или используй кнопки-подсказки.`,
+      `Начинаем мини-сессию: ${SESSION_CARD_LIMIT} карточек. Для каждого слова сначала выбери, знаешь ты его или нет.`,
     );
 
     await sendNextLearningCard(ctx, learningService, activeCards, activeSessions);
@@ -88,47 +93,41 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     await ctx.reply("Ссылка на поддержку проекта пока не настроена.");
   });
 
-  bot.action(/^learn:show:(\d+)$/, async (ctx) => {
-    if (!ctx.from) {
-      return;
-    }
-
-    await learningService.ensureUser(ctx.from);
-    const activeCard = activeCards.get(ctx.from.id);
-    const wordId = Number.parseInt(ctx.match[1], 10);
-
-    if (!activeCard || activeCard.wordId !== wordId) {
-      await ctx.answerCbQuery("Карточка устарела. Открой новую.");
-      return;
-    }
-
-    await ctx.editMessageText(
-      formatLearningCard(activeCard.serbianLatin, activeCard.russianTranslation),
-      createAnswerKeyboard(activeCard.wordId),
-    );
-  });
-
-  bot.action(/^learn:rate:(\d+):(known|again)$/, async (ctx) => {
+  bot.action(/^learn:mode:(known|unknown):(\d+)$/, async (ctx) => {
     if (!ctx.from) {
       return;
     }
 
     const user = await learningService.ensureUser(ctx.from);
-    const activeCard = activeCards.get(ctx.from.id);
+    const activeState = activeCards.get(ctx.from.id);
+    const mode = ctx.match[1] as "known" | "unknown";
+    const wordId = Number.parseInt(ctx.match[2], 10);
     const session = activeSessions.get(ctx.from.id);
-    const wordId = Number.parseInt(ctx.match[1], 10);
-    const answer = ctx.match[2] as LearningAnswer;
 
-    if (!activeCard || activeCard.wordId !== wordId || !session) {
-      await ctx.answerCbQuery("Сессия устарела. Начни заново через «Учить сербский».");
+    if (!activeState || activeState.card.wordId !== wordId || !session) {
+      await ctx.answerCbQuery("Сессия устарела. Нажми «Учить сербский» и начни заново.");
       return;
     }
 
-    await learningService.registerAnswer(user.id, wordId, answer);
-    updateSessionStats(session, answer === "known");
+    if (mode === "known") {
+      activeCards.set(ctx.from.id, {
+        card: activeState.card,
+        expectsTextAnswer: true,
+      });
+
+      await ctx.answerCbQuery("Хорошо, напиши перевод сообщением.");
+      await ctx.editMessageText(
+        formatTranslationPrompt(activeState.card.serbianLatin, session),
+        createAwaitingTranslationKeyboard(activeState.card.wordId),
+      );
+      return;
+    }
+
+    await learningService.registerAnswer(user.id, activeState.card.wordId, "again");
+    updateSessionStats(session, false);
     activeCards.delete(ctx.from.id);
-    await ctx.answerCbQuery(answer === "known" ? "Сохранил как знакомое слово." : "Отмечено на повторение.");
-    await safelyRemoveInlineKeyboard(ctx);
+    await ctx.answerCbQuery("Показываю перевод и отправляю слово на повторение.");
+    await ctx.editMessageText(formatUnknownWordRevealCard(activeState.card.serbianLatin, activeState.card.russianTranslation));
     await sendNextLearningCard(ctx, learningService, activeCards, activeSessions);
   });
 
@@ -164,32 +163,37 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
       return next();
     }
 
-    const activeCard = activeCards.get(ctx.from.id);
+    const activeState = activeCards.get(ctx.from.id);
     const session = activeSessions.get(ctx.from.id);
 
-    if (!activeCard || !session) {
+    if (!activeState || !session) {
       return next();
     }
 
+    if (!activeState.expectsTextAnswer) {
+      await ctx.reply("Сначала выбери кнопкой: «Я знаю это слово» или «Я не знаю этого слова»." );
+      return;
+    }
+
     const user = await learningService.ensureUser(ctx.from);
-    const checkResult = learningService.checkTranslationAnswer(text, activeCard.russianTranslation);
+    const checkResult = learningService.checkTranslationAnswer(text, activeState.card.russianTranslation);
     const answer: LearningAnswer = checkResult.isCorrect ? "known" : "again";
 
-    await learningService.registerAnswer(user.id, activeCard.wordId, answer);
+    await learningService.registerAnswer(user.id, activeState.card.wordId, answer);
     updateSessionStats(session, checkResult.isCorrect);
     activeCards.delete(ctx.from.id);
 
     if (checkResult.isCorrect) {
       await ctx.reply([
         "Верно.",
-        `Сербский: ${activeCard.serbianLatin}`,
-        `Перевод: ${activeCard.russianTranslation}`,
+        `Сербский: ${activeState.card.serbianLatin}`,
+        `Перевод: ${activeState.card.russianTranslation}`,
       ].join("\n"));
     } else {
       await ctx.reply([
         "Пока неверно.",
         `Твой ответ: ${text}`,
-        `Правильный перевод: ${activeCard.russianTranslation}`,
+        `Правильный перевод: ${activeState.card.russianTranslation}`,
       ].join("\n"));
     }
 
@@ -220,7 +224,7 @@ function updateSessionStats(session: LearningSession, isCorrect: boolean): void 
 async function sendNextLearningCard(
   ctx: Context,
   learningService: LearningService,
-  activeCards: Map<number, LearningCard>,
+  activeCards: Map<number, ActiveLearningCard>,
   activeSessions: Map<number, LearningSession>,
 ): Promise<void> {
   if (!ctx.from) {
@@ -254,11 +258,14 @@ async function sendNextLearningCard(
     return;
   }
 
-  activeCards.set(ctx.from.id, nextCard);
+  activeCards.set(ctx.from.id, {
+    card: nextCard,
+    expectsTextAnswer: false,
+  });
 
   await ctx.reply(
     formatPromptCard(nextCard.serbianLatin, session),
-    createRevealTranslationKeyboard(nextCard.wordId),
+    createKnowledgeChoiceKeyboard(nextCard.wordId),
   );
 }
 
@@ -266,16 +273,23 @@ function formatPromptCard(serbianLatin: string, session: LearningSession): strin
   return [
     `Карточка ${session.answeredCards + 1}/${session.totalCards}`,
     `Сербский: ${serbianLatin}`,
-    "Напиши перевод на русский сообщением или открой подсказку кнопкой ниже.",
+    "Сначала выбери, знаешь ты это слово или нет.",
   ].join("\n");
 }
 
-function formatLearningCard(serbianLatin: string, russianTranslation: string): string {
+function formatTranslationPrompt(serbianLatin: string, session: LearningSession): string {
   return [
-    "Карточка",
+    `Карточка ${session.answeredCards + 1}/${session.totalCards}`,
+    `Сербский: ${serbianLatin}`,
+    "Хорошо. Теперь напиши перевод на русский сообщением.",
+  ].join("\n");
+}
+
+function formatUnknownWordRevealCard(serbianLatin: string, russianTranslation: string): string {
+  return [
+    "Слово отмечено на повторение.",
     `Сербский: ${serbianLatin}`,
     `Перевод: ${russianTranslation}`,
-    "Теперь можешь оценить слово кнопками ниже.",
   ].join("\n");
 }
 

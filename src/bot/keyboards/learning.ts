@@ -1,18 +1,16 @@
 import { Markup } from "telegraf";
 
-export function createRevealTranslationKeyboard(wordId: number) {
+export function createKnowledgeChoiceKeyboard(wordId: number) {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("Показать перевод", `learn:show:${wordId}`)],
+    [Markup.button.callback("Я знаю это слово", `learn:mode:known:${wordId}`)],
+    [Markup.button.callback("Я не знаю этого слова", `learn:mode:unknown:${wordId}`)],
     [Markup.button.callback("Закончить", "learn:stop")],
   ]);
 }
 
-export function createAnswerKeyboard(wordId: number) {
+export function createAwaitingTranslationKeyboard(wordId: number) {
   return Markup.inlineKeyboard([
-    [
-      Markup.button.callback("Знаю", `learn:rate:${wordId}:known`),
-      Markup.button.callback("Повторить", `learn:rate:${wordId}:again`),
-    ],
+    [Markup.button.callback("Я не знаю этого слова", `learn:mode:unknown:${wordId}`)],
     [Markup.button.callback("Закончить", "learn:stop")],
   ]);
 }
