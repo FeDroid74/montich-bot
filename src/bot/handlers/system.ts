@@ -5,7 +5,7 @@ import { createMainMenuKeyboard } from "../keyboards/main-menu.js";
 export function registerSystemHandlers(bot: Telegraf, context: AppContext): void {
   bot.start(async (ctx) => {
     await ctx.reply(
-      "Montich bot initialized. Core architecture is ready for the next feature stages.",
+      "Бот Montich запущен. Базовая архитектура готова, дальше будем постепенно добавлять функции.",
       createMainMenuKeyboard(),
     );
   });
@@ -14,9 +14,9 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     const databaseStatus = context.database.getStatus();
 
     await ctx.reply([
-      "Bot process is healthy.",
-      `Environment: ${context.config.runtimeEnvironment}`,
-      `Database: ${databaseStatus.label}`,
+      "Бот работает исправно.",
+      `Среда: ${context.config.runtimeEnvironment}`,
+      `База данных: ${databaseStatus.label}`,
     ].join("\n"));
   });
 }
