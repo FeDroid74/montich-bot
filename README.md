@@ -1,14 +1,13 @@
 # Montich Bot
 
-Stage 3 introduces the base application architecture for the Telegram bot.
+Stage 4 adds a real PostgreSQL integration layer and the initial migration flow.
 
 ## Included in this stage
 
-- Modular app bootstrap layer
-- Dedicated bot handlers and keyboards
-- Centralized configuration loading and validation
-- Database preparation layer with planned domain models
-- `/health` output that reports runtime environment and database configuration state
+- Real `pg` connection adapter
+- Database health initialization on app startup
+- Migration scripts for the initial schema
+- Domain schema for users, vocabulary, progress, custom sentences, FAQ, and files
 
 ## Project structure
 
@@ -18,6 +17,8 @@ src/
   bot/
   config/
   database/
+    migrations/
+  scripts/
 ```
 
 ## Commands
@@ -26,10 +27,23 @@ src/
 npm install
 npm run build
 npm run dev
+npm run db:check
+npm run db:migrate
 ```
 
 ## Environment
 
 Copy `.env.example` to `.env` and fill in at least `BOT_TOKEN`.
 
-`DATABASE_URL` is optional at this stage. When omitted, the bot starts with the database layer marked as not configured.
+`DATABASE_URL` is optional while the database is not ready yet. Once PostgreSQL is available, set for example:
+
+```env
+DATABASE_URL=postgresql://postgres:password@127.0.0.1:5432/montich_bot
+```
+
+Then run:
+
+```bash
+npm run db:check
+npm run db:migrate
+```

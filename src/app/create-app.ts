@@ -1,6 +1,6 @@
+import { createBot } from "../bot/create-bot.js";
 import { appConfig } from "../config/app-config.js";
 import { createDatabaseAdapter } from "../database/database.js";
-import { createBot } from "../bot/create-bot.js";
 import type { AppContext } from "./context.js";
 
 export interface AppInstance {
@@ -20,6 +20,7 @@ export function createApp(): AppInstance {
   return {
     context,
     async start(): Promise<void> {
+      await context.database.initialize();
       await bot.launch();
       console.log(`Montich bot started in ${context.config.runtimeEnvironment} mode.`);
     },

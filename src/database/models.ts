@@ -1,6 +1,10 @@
 export type UserRole = "admin" | "student";
+export type WordSource = "admin" | "user";
+export type WordProgressState = "new" | "learning" | "review" | "mastered";
+export type FaqAssetType = "image" | "document";
 
 export interface UserProfile {
+  id: number;
   telegramId: number;
   username: string | null;
   firstName: string;
@@ -10,15 +14,18 @@ export interface UserProfile {
 }
 
 export interface UserSettings {
-  telegramId: number;
+  userId: number;
   reminderTime: string | null;
   timezone: string | null;
   dailyGoalMinutes: number;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface VocabularyWord {
-  id: string;
-  source: "admin" | "user";
+  id: number;
+  source: WordSource;
+  createdByUserId: number | null;
   serbianLatin: string;
   russianTranslation: string;
   topic: string | null;
@@ -27,9 +34,9 @@ export interface VocabularyWord {
 }
 
 export interface UserWordProgress {
-  telegramId: number;
-  wordId: string;
-  state: "new" | "learning" | "review" | "mastered";
+  userId: number;
+  wordId: number;
+  state: WordProgressState;
   lastReviewedAt: Date | null;
   nextReviewAt: Date | null;
   correctAnswers: number;
@@ -37,32 +44,36 @@ export interface UserWordProgress {
 }
 
 export interface CustomSentence {
-  id: string;
-  telegramId: number;
+  id: number;
+  userId: number;
   originalText: string;
   correctedText: string | null;
   topic: string | null;
   scheduledReviewAt: Date | null;
+  createdAt: Date;
 }
 
 export interface FaqCategory {
-  id: string;
+  id: number;
   slug: string;
   title: string;
 }
 
 export interface FaqEntry {
-  id: string;
-  categoryId: string;
+  id: number;
+  categoryId: number;
   question: string;
   answer: string;
   keywords: string[];
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface FaqAsset {
-  id: string;
-  faqEntryId: string;
+  id: number;
+  faqEntryId: number;
   fileName: string;
-  fileType: "image" | "document";
+  fileType: FaqAssetType;
   storagePath: string;
+  createdAt: Date;
 }
