@@ -12,7 +12,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "db:check": "tsx src/scripts/check-db.ts",
-    "db:migrate": "tsx src/scripts/migrate.ts"
+    "db:migrate": "tsx src/scripts/migrate.ts",
+    "words:import": "tsx src/scripts/import-vocabulary.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

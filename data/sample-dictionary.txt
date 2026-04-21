@@ -1,0 +1,85 @@
+Izbor - выбор
+Odgovornost - ответственность
+Stav - отношение
+Odluke - решение
+suština - суть
+
+Čovek - человек
+Dakle - то есть
+Deblje - (узнать)
+Inteligencija - интеллект
+Nadređeni - начальник
+Izvinite sta kasnim - извините за опоздание
+Razlika (!) - отличие/разница
+Kvalitet - качество
+Podatak - данные
+
+Verzije - версии
+Prednosti- преимущества
+Niska - низкая
+Imun - иммунитет
+Zahtevani [hardver] - нужное/необходимое [оборудование]
+Teži - вес (оно весит) / сложный
+Jeftiniji - дешевле
+
+Rečenice - фраза
+Uvek - всегда
+Kvantitativna - количественная
+Kretnje - движения
+Rizik - риск
+Zajedničko - общее
+Čak - даже
+ponekad mora - иногда это необходимо
+razvoj - разработка
+implementacija  - выполнение
+napora - усилие
+način - способ (подход)
+komšinici - соседи
+rekao - сказал
+privrženost  - вложение
+sećam - помню
+Novac - деньги
+lagao - лгал
+sigurno - точно
+
+tastatura - клавиатура
+ekstenzija - расширение (файла)
+komprimo vani - сжатый (файл)
+odabrati - выбрать
+recimo - например
+Pasus - абзац
+isključimo - выключить
+Mašte - воображение
+putnik - пассажир
+
+vrijednost - ценность
+stručne - профессиональный
+uopšteno - в общем
+vjerovatnoća  - вероятность
+izradi - делать
+svrha - цель
+Imovina - свойство
+Skice - черновик
+Visina - высота
+Ulaganje - инвестиции
+nastavak - продолжение
+unutrašnji - внутренний
+spoljneg - внешний
+
+morate - вы должны
+rat - война (?)
+kapacitet - потенциал
+riječ - слово
+Između - между
+odnosa - отношение
+zaokret - повернуть
+
+povratićete -
+isto - то же самое
+sranje - хрень
+pažnju - внимание
+izvor - источник
+dio - часть
+bitan - важен
+ako - если
+pritužba - жалоба
