@@ -1,13 +1,12 @@
 # Montich Bot
 
-Stage 4 adds a real PostgreSQL integration layer and the initial migration flow.
+Stage 5 adds local PostgreSQL bootstrap scripts for the VPS development environment.
 
 ## Included in this stage
 
-- Real `pg` connection adapter
-- Database health initialization on app startup
-- Migration scripts for the initial schema
-- Domain schema for users, vocabulary, progress, custom sentences, FAQ, and files
+- Local PostgreSQL installation scripts under `scripts/postgres`
+- Home-directory PostgreSQL layout for development on VPS
+- Commands to initialize, start, stop, and inspect the local database
 
 ## Project structure
 
@@ -17,8 +16,9 @@ src/
   bot/
   config/
   database/
-    migrations/
   scripts/
+scripts/
+  postgres/
 ```
 
 ## Commands
@@ -31,19 +31,31 @@ npm run db:check
 npm run db:migrate
 ```
 
+## Local PostgreSQL on VPS
+
+Development PostgreSQL is installed into the home directory from Ubuntu packages and does not depend on OpenClaw paths.
+
+```bash
+./scripts/postgres/install-local-postgres.sh
+./scripts/postgres/init-local-postgres.sh
+./scripts/postgres/start-local-postgres.sh
+npm run db:check
+npm run db:migrate
+```
+
+Useful commands:
+
+```bash
+./scripts/postgres/status-local-postgres.sh
+./scripts/postgres/stop-local-postgres.sh
+```
+
 ## Environment
 
 Copy `.env.example` to `.env` and fill in at least `BOT_TOKEN`.
 
-`DATABASE_URL` is optional while the database is not ready yet. Once PostgreSQL is available, set for example:
+Default local database URL:
 
 ```env
-DATABASE_URL=postgresql://postgres:password@127.0.0.1:5432/montich_bot
-```
-
-Then run:
-
-```bash
-npm run db:check
-npm run db:migrate
+DATABASE_URL=postgresql://appuser@127.0.0.1:5433/montich_bot
 ```
