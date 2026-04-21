@@ -1,22 +1,24 @@
 # Montich Bot
 
-Stage 8 adds text answers to the learning flow.
+Stage 9 adds a bounded learning mini-session.
 
 ## Included in this stage
 
-- Active learning card state per user
-- Text answer checking for Russian translations
-- Automatic progress update after a typed answer
-- Automatic transition to the next card after feedback
+- Mini-session with a fixed number of cards
+- Session progress during learning
+- Final session summary with results
+- Early stop with partial session summary
 
 ## Learning flow
 
 1. Press `Учить сербский`.
-2. Read the Serbian word.
-3. Type the Russian translation as a normal message.
-4. The bot checks the answer, shows feedback, and sends the next card.
+2. The bot starts a mini-session of 7 cards.
+3. Translate each word by text or use the fallback buttons.
+4. After the last card, the bot shows a short session summary.
 
-Fallback flow with buttons is still available:
+Session summary includes:
 
-1. Press `Показать перевод`.
-2. Mark the card with `Знаю` or `Повторить`.
+- answered cards
+- correct answers
+- mistakes / repeat answers
+- accuracy percentage
