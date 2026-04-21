@@ -1,30 +1,22 @@
 # Montich Bot
 
-Stage 7 adds the first working learning flow from the PostgreSQL vocabulary.
+Stage 8 adds text answers to the learning flow.
 
 ## Included in this stage
 
-- Learning card flow from the imported vocabulary
-- User upsert on interaction with the bot
-- Saving word progress after each answer
-- Progress summary in the `Мой прогресс` section
-
-## Commands
-
-```bash
-npm install
-npm run build
-npm run db:check
-npm run db:migrate
-npm run words:import -- /absolute/path/to/dictionary.txt
-```
+- Active learning card state per user
+- Text answer checking for Russian translations
+- Automatic progress update after a typed answer
+- Automatic transition to the next card after feedback
 
 ## Learning flow
 
-1. Open the bot in Telegram.
-2. Press `Учить сербский`.
-3. Press `Показать перевод`.
-4. Mark the card with `Знаю` or `Повторить`.
-5. The bot sends the next card automatically.
+1. Press `Учить сербский`.
+2. Read the Serbian word.
+3. Type the Russian translation as a normal message.
+4. The bot checks the answer, shows feedback, and sends the next card.
 
-`Мой прогресс` shows a short summary based on `user_word_progress`.
+Fallback flow with buttons is still available:
+
+1. Press `Показать перевод`.
+2. Mark the card with `Знаю` or `Повторить`.

@@ -29,6 +29,11 @@ export interface ProgressSummary {
   dueWords: number;
 }
 
+export interface TranslationCheckResult {
+  isCorrect: boolean;
+  acceptedVariants: string[];
+}
+
 interface LearningUserRow {
   id: number;
   telegram_id: number;
@@ -209,6 +214,16 @@ export class LearningService {
       dueWords: row.due_words,
     };
   }
+
+  public checkTranslationAnswer(answer: string, expectedTranslation: string): TranslationCheckResult {
+    const normalizedAnswer = normalizeTranslationFragment(answer);
+    const acceptedVariants = extractAcceptedTranslations(expectedTranslation);
+
+    return {
+      isCorrect: normalizedAnswer.length > 0 && acceptedVariants.includes(normalizedAnswer),
+      acceptedVariants,
+    };
+  }
 }
 
 function getKnownNextState(state: WordProgressState): WordProgressState {
@@ -247,4 +262,54 @@ function addHours(date: Date, hours: number): Date {
 
 function addDays(date: Date, days: number): Date {
   return addHours(date, days * 24);
+}
+
+function extractAcceptedTranslations(translation: string): string[] {
+  const variants = new Set<string>();
+
+  for (const rawVariant of translation.split(/[\/;]/)) {
+    const trimmedVariant = rawVariant.trim();
+
+    if (!trimmedVariant) {
+      continue;
+    }
+
+    addCandidate(variants, trimmedVariant);
+
+    const withoutNotes = trimmedVariant
+      .replace(/\([^)]*\)/g, " ")
+      .replace(/\[[^\]]*\]/g, " ")
+      .trim();
+
+    addCandidate(variants, withoutNotes);
+
+    for (const match of trimmedVariant.matchAll(/\(([^)]*)\)/g)) {
+      addCandidate(variants, match[1]);
+    }
+
+    for (const match of trimmedVariant.matchAll(/\[([^\]]*)\]/g)) {
+      addCandidate(variants, match[1]);
+      addCandidate(variants, `${withoutNotes} ${match[1]}`);
+    }
+  }
+
+  return [...variants];
+}
+
+function addCandidate(variants: Set<string>, value: string): void {
+  const normalized = normalizeTranslationFragment(value);
+
+  if (normalized) {
+    variants.add(normalized);
+  }
+}
+
+function normalizeTranslationFragment(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[!?.,:;"'`]/g, " ")
+    .replace(/[()\[\]]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
