@@ -1,7 +1,7 @@
 import type { Context, Telegraf } from "telegraf";
 import type { AppContext } from "../../app/context.js";
 import { LearningService, type LearningAnswer, type LearningCard } from "../../learning/service.js";
-import { createAwaitingTranslationKeyboard, createKnowledgeChoiceKeyboard } from "../keyboards/learning.js";
+import { createLearningCardKeyboard } from "../keyboards/learning.js";
 import { MAIN_MENU_BUTTONS, createMainMenuKeyboard } from "../keyboards/main-menu.js";
 
 const SESSION_CARD_LIMIT = 10;
@@ -16,7 +16,6 @@ interface LearningSession {
 
 interface ActiveLearningCard {
   card: LearningCard;
-  expectsTextAnswer: boolean;
 }
 
 export function registerSystemHandlers(bot: Telegraf, context: AppContext): void {
@@ -56,7 +55,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     activeCards.delete(ctx.from.id);
 
     await ctx.reply(
-      `Начинаем мини-сессию: ${SESSION_CARD_LIMIT} карточек. Для каждого слова сначала выбери, знаешь ты его или нет.`,
+      `Начинаем мини-сессию: ${SESSION_CARD_LIMIT} карточек. Пиши перевод сообщением, а если не знаешь слово, нажимай кнопку ниже.`,
     );
 
     await sendNextLearningCard(ctx, learningService, activeCards, activeSessions);
@@ -93,33 +92,18 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     await ctx.reply("Ссылка на поддержку проекта пока не настроена.");
   });
 
-  bot.action(/^learn:mode:(known|unknown):(\d+)$/, async (ctx) => {
+  bot.action(/^learn:mode:unknown:(\d+)$/, async (ctx) => {
     if (!ctx.from) {
       return;
     }
 
     const user = await learningService.ensureUser(ctx.from);
     const activeState = activeCards.get(ctx.from.id);
-    const mode = ctx.match[1] as "known" | "unknown";
-    const wordId = Number.parseInt(ctx.match[2], 10);
+    const wordId = Number.parseInt(ctx.match[1], 10);
     const session = activeSessions.get(ctx.from.id);
 
     if (!activeState || activeState.card.wordId !== wordId || !session) {
       await ctx.answerCbQuery("Сессия устарела. Нажми «Учить сербский» и начни заново.");
-      return;
-    }
-
-    if (mode === "known") {
-      activeCards.set(ctx.from.id, {
-        card: activeState.card,
-        expectsTextAnswer: true,
-      });
-
-      await ctx.answerCbQuery("Хорошо, напиши перевод сообщением.");
-      await ctx.editMessageText(
-        formatTranslationPrompt(activeState.card.serbianLatin, session),
-        createAwaitingTranslationKeyboard(activeState.card.wordId),
-      );
       return;
     }
 
@@ -168,11 +152,6 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
 
     if (!activeState || !session) {
       return next();
-    }
-
-    if (!activeState.expectsTextAnswer) {
-      await ctx.reply("Сначала выбери кнопкой: «Я знаю это слово» или «Я не знаю этого слова»." );
-      return;
     }
 
     const user = await learningService.ensureUser(ctx.from);
@@ -260,12 +239,11 @@ async function sendNextLearningCard(
 
   activeCards.set(ctx.from.id, {
     card: nextCard,
-    expectsTextAnswer: false,
   });
 
   await ctx.reply(
     formatPromptCard(nextCard.serbianLatin, session),
-    createKnowledgeChoiceKeyboard(nextCard.wordId),
+    createLearningCardKeyboard(nextCard.wordId),
   );
 }
 
@@ -273,15 +251,7 @@ function formatPromptCard(serbianLatin: string, session: LearningSession): strin
   return [
     `Карточка ${session.answeredCards + 1}/${session.totalCards}`,
     `Сербский: ${serbianLatin}`,
-    "Сначала выбери, знаешь ты это слово или нет.",
-  ].join("\n");
-}
-
-function formatTranslationPrompt(serbianLatin: string, session: LearningSession): string {
-  return [
-    `Карточка ${session.answeredCards + 1}/${session.totalCards}`,
-    `Сербский: ${serbianLatin}`,
-    "Хорошо. Теперь напиши перевод на русский сообщением.",
+    "Напиши перевод на русский сообщением. Если не знаешь слово, нажми кнопку ниже.",
   ].join("\n");
 }
 
