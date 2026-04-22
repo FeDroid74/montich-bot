@@ -16,6 +16,7 @@ interface LearningSession {
 
 interface ActiveLearningCard {
   card: LearningCard;
+  promptMessageId: number;
 }
 
 export function registerSystemHandlers(bot: Telegraf, context: AppContext): void {
@@ -53,11 +54,6 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
 
     activeSessions.set(ctx.from.id, createLearningSession());
     activeCards.delete(ctx.from.id);
-
-    await ctx.reply(
-      `Начинаем мини-сессию: ${SESSION_CARD_LIMIT} карточек. Пиши перевод сообщением, а если не знаешь слово, нажимай кнопку ниже.`,
-    );
-
     await sendNextLearningCard(ctx, learningService, activeCards, activeSessions);
   });
 
@@ -109,22 +105,25 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     await learningService.registerAnswer(user.id, activeState.card.wordId, "again");
     updateSessionStats(session, false);
     activeCards.delete(ctx.from.id);
-    await ctx.answerCbQuery("Показываю перевод и отправляю слово на повторение.");
-    await ctx.editMessageText(formatUnknownWordRevealCard(activeState.card.serbianLatin, activeState.card.russianTranslation));
-    await sendNextLearningCard(ctx, learningService, activeCards, activeSessions);
+    await ctx.answerCbQuery();
+    await sendNextLearningCard(ctx, learningService, activeCards, activeSessions, {
+      leadText: formatUnknownWordRevealCard(activeState.card.serbianLatin, activeState.card.russianTranslation),
+      cleanupMessageIds: [activeState.promptMessageId],
+    });
   });
 
   bot.action("learn:stop", async (ctx) => {
     if (ctx.from) {
+      const activeState = activeCards.get(ctx.from.id) ?? null;
       activeCards.delete(ctx.from.id);
       const session = activeSessions.get(ctx.from.id) ?? null;
       activeSessions.delete(ctx.from.id);
 
-      await ctx.answerCbQuery("Сессию остановил.");
-      await safelyRemoveInlineKeyboard(ctx);
+      await ctx.answerCbQuery();
 
       if (session) {
         await ctx.reply(formatSessionSummary(session, true));
+        await safeDeleteMessages(ctx, activeState ? [activeState.promptMessageId] : []);
       } else {
         await ctx.reply("Сессию завершил. Когда будешь готов, снова нажми «Учить сербский»." );
       }
@@ -161,21 +160,12 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     updateSessionStats(session, checkResult.isCorrect);
     activeCards.delete(ctx.from.id);
 
-    if (checkResult.isCorrect) {
-      await ctx.reply([
-        "Верно.",
-        `Сербский: ${activeState.card.serbianLatin}`,
-        `Перевод: ${activeState.card.russianTranslation}`,
-      ].join("\n"));
-    } else {
-      await ctx.reply([
-        "Пока неверно.",
-        `Твой ответ: ${text}`,
-        `Правильный перевод: ${activeState.card.russianTranslation}`,
-      ].join("\n"));
-    }
-
-    await sendNextLearningCard(ctx, learningService, activeCards, activeSessions);
+    await sendNextLearningCard(ctx, learningService, activeCards, activeSessions, {
+      leadText: checkResult.isCorrect
+        ? formatCorrectAnswerResult(activeState.card.serbianLatin, activeState.card.russianTranslation)
+        : formatWrongAnswerResult(text, activeState.card.russianTranslation),
+      cleanupMessageIds: [activeState.promptMessageId, ctx.message.message_id],
+    });
   });
 }
 
@@ -204,6 +194,10 @@ async function sendNextLearningCard(
   learningService: LearningService,
   activeCards: Map<number, ActiveLearningCard>,
   activeSessions: Map<number, LearningSession>,
+  options: {
+    leadText?: string;
+    cleanupMessageIds?: number[];
+  } = {},
 ): Promise<void> {
   if (!ctx.from) {
     return;
@@ -212,14 +206,22 @@ async function sendNextLearningCard(
   const session = activeSessions.get(ctx.from.id);
 
   if (!session) {
-    await ctx.reply("Сессия не активна. Нажми «Учить сербский», чтобы начать новую мини-сессию.");
+    const sentMessage = await ctx.reply(joinMessageParts([
+      options.leadText,
+      "Сессия не активна. Нажми «Учить сербский», чтобы начать новую мини-сессию.",
+    ]));
+    await safeDeleteMessages(ctx, options.cleanupMessageIds ?? []);
     return;
   }
 
   if (session.answeredCards >= session.totalCards) {
     activeCards.delete(ctx.from.id);
     activeSessions.delete(ctx.from.id);
-    await ctx.reply(formatSessionSummary(session, false));
+    await ctx.reply(joinMessageParts([
+      options.leadText,
+      formatSessionSummary(session, false),
+    ]));
+    await safeDeleteMessages(ctx, options.cleanupMessageIds ?? []);
     return;
   }
 
@@ -229,21 +231,29 @@ async function sendNextLearningCard(
   if (!nextCard) {
     activeCards.delete(ctx.from.id);
     activeSessions.delete(ctx.from.id);
-    await ctx.reply([
+    await ctx.reply(joinMessageParts([
+      options.leadText,
       "Слова для обучения пока закончились.",
       formatSessionSummary(session, false),
-    ].join("\n\n"));
+    ]));
+    await safeDeleteMessages(ctx, options.cleanupMessageIds ?? []);
     return;
   }
 
-  activeCards.set(ctx.from.id, {
-    card: nextCard,
-  });
-
-  await ctx.reply(
-    formatPromptCard(nextCard.serbianLatin, session),
+  const sentMessage = await ctx.reply(
+    joinMessageParts([
+      options.leadText,
+      formatPromptCard(nextCard.serbianLatin, session),
+    ]),
     createLearningCardKeyboard(nextCard.wordId),
   );
+
+  activeCards.set(ctx.from.id, {
+    card: nextCard,
+    promptMessageId: sentMessage.message_id,
+  });
+
+  await safeDeleteMessages(ctx, options.cleanupMessageIds ?? []);
 }
 
 function formatPromptCard(serbianLatin: string, session: LearningSession): string {
@@ -251,6 +261,22 @@ function formatPromptCard(serbianLatin: string, session: LearningSession): strin
     `Карточка ${session.answeredCards + 1}/${session.totalCards}`,
     `Сербский: ${serbianLatin}`,
     "Напиши перевод на русский сообщением. Если не знаешь слово, нажми кнопку ниже.",
+  ].join("\n");
+}
+
+function formatCorrectAnswerResult(serbianLatin: string, russianTranslation: string): string {
+  return [
+    "Верно.",
+    `Сербский: ${serbianLatin}`,
+    `Перевод: ${russianTranslation}`,
+  ].join("\n");
+}
+
+function formatWrongAnswerResult(answer: string, russianTranslation: string): string {
+  return [
+    "Пока неверно.",
+    `Твой ответ: ${answer}`,
+    `Правильный перевод: ${russianTranslation}`,
   ].join("\n");
 }
 
@@ -287,5 +313,23 @@ async function safelyRemoveInlineKeyboard(ctx: InlineKeyboardCleanupContext): Pr
     await ctx.editMessageReplyMarkup(undefined);
   } catch {
     // Ignore stale message edits from Telegram callbacks.
+  }
+}
+
+function joinMessageParts(parts: Array<string | undefined>): string {
+  return parts.filter((part): part is string => Boolean(part)).join("\n\n");
+}
+
+async function safeDeleteMessages(ctx: Context, messageIds: number[]): Promise<void> {
+  if (!ctx.chat) {
+    return;
+  }
+
+  for (const messageId of messageIds) {
+    try {
+      await ctx.telegram.deleteMessage(ctx.chat.id, messageId);
+    } catch {
+      // Ignore deletion failures for already deleted or stale messages.
+    }
   }
 }
