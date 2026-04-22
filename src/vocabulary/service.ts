@@ -21,6 +21,23 @@ export interface AddWordResult {
 export class VocabularyService {
   public constructor(private readonly database: DatabaseAdapter) {}
 
+  public async listWords(filter: "all" | "active" | "hidden" = "all", limit = 500): Promise<VocabularyWord[]> {
+    const result = await this.database.query<VocabularyWordRow>(
+      `
+        select *
+        from vocabulary_words
+        where ($1 = 'all')
+           or ($1 = 'active' and is_active = true)
+           or ($1 = 'hidden' and is_active = false)
+        order by id asc
+        limit $2
+      `,
+      [filter, limit],
+    );
+
+    return result.rows.map(mapVocabularyWord);
+  }
+
   public async addAdminWord(serbianLatin: string, russianTranslation: string): Promise<AddWordResult> {
     const existingWord = await this.database.query<VocabularyWordRow>(
       `

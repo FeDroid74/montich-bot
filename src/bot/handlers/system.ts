@@ -1,8 +1,10 @@
 import type { Context, Telegraf } from "telegraf";
 import type { AppContext } from "../../app/context.js";
-import { LearningService, parseReminderTime, type LearningAnswer, type LearningCard } from "../../learning/service.js";
+import { LearningService, parseReminderTime, type LearningAnswer, type LearningItem } from "../../learning/service.js";
+import { PhraseService } from "../../phrases/service.js";
 import { VocabularyService } from "../../vocabulary/service.js";
 import { registerAdminDictionaryHandlers } from "./admin-dictionary.js";
+import { registerPhraseHandlers } from "./phrases.js";
 import { createLearningCardKeyboard } from "../keyboards/learning.js";
 import { MAIN_MENU_BUTTONS, createMainMenuKeyboard } from "../keyboards/main-menu.js";
 
@@ -12,31 +14,33 @@ interface LearningSession {
   correctAnswers: number;
   wrongAnswers: number;
   startedAt: number;
-  servedWordIds: number[];
+  servedItemKeys: string[];
 }
 
-interface ActiveLearningCard {
-  card: LearningCard;
+interface ActiveLearningItem {
+  item: LearningItem;
   promptMessageId: number;
 }
 
 export function registerSystemHandlers(bot: Telegraf, context: AppContext): void {
   const learningService = new LearningService(context.database, context.config.bot.adminTelegramId);
   const vocabularyService = new VocabularyService(context.database);
-  const activeCards = new Map<number, ActiveLearningCard>();
+  const phraseService = new PhraseService(context.database);
+  const activeItems = new Map<number, ActiveLearningItem>();
   const activeSessions = new Map<number, LearningSession>();
 
   registerAdminDictionaryHandlers(bot, learningService, vocabularyService);
+  registerPhraseHandlers(bot, learningService, phraseService);
 
   bot.start(async (ctx) => {
     if (ctx.from) {
       await learningService.ensureUser(ctx.from);
-      activeCards.delete(ctx.from.id);
+      activeItems.delete(ctx.from.id);
       activeSessions.delete(ctx.from.id);
     }
 
     await ctx.reply(
-      "Бот Montich запущен. Можно учить слова, смотреть прогресс и постепенно расширять функциональность.",
+      "Бот Montich запущен. Можно учить слова, фразы, смотреть прогресс и постепенно расширять функциональность.",
       createMainMenuKeyboard(),
     );
   });
@@ -147,10 +151,10 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     const totalCards = await learningService.getSessionCardLimit(user.id);
 
     activeSessions.set(ctx.from.id, createLearningSession(totalCards));
-    activeCards.delete(ctx.from.id);
+    activeItems.delete(ctx.from.id);
 
-    await sendNextLearningCard(ctx, learningService, activeCards, activeSessions, {
-      leadText: `Начинаем мини-сессию: ${totalCards} карточек. Пиши перевод сообщением, а если не знаешь слово, нажимай кнопку ниже.`,
+    await sendNextLearningItem(ctx, learningService, activeItems, activeSessions, {
+      leadText: `Начинаем мини-сессию: ${totalCards} карточек. Пиши перевод сообщением, а если не знаешь слово или фразу, нажимай кнопку ниже.`,
     });
   });
 
@@ -173,7 +177,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
   });
 
   bot.hears(MAIN_MENU_BUTTONS.faq, async (ctx) => {
-    await ctx.reply("Раздел FAQ будет следующим этапом. Сейчас уже готов учебный модуль и база слов.");
+    await ctx.reply("Раздел FAQ будет следующим этапом. Сейчас приоритет на обучение языку.");
   });
 
   bot.hears(MAIN_MENU_BUTTONS.donate, async (ctx) => {
@@ -185,34 +189,35 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     await ctx.reply("Ссылка на поддержку проекта пока не настроена.");
   });
 
-  bot.action(/^learn:mode:unknown:(\d+)$/, async (ctx) => {
+  bot.action(/^learn:unknown:(word|phrase):(\d+)$/, async (ctx) => {
     if (!ctx.from) {
       return;
     }
 
     const user = await learningService.ensureUser(ctx.from);
-    const activeState = activeCards.get(ctx.from.id);
+    const activeState = activeItems.get(ctx.from.id);
     const session = activeSessions.get(ctx.from.id);
+    const expectedKey = `${ctx.match[1]}:${ctx.match[2]}`;
 
-    if (!activeState || !session) {
+    if (!activeState || !session || getLearningItemKey(activeState.item) !== expectedKey) {
       await ctx.answerCbQuery("Сессия устарела. Нажми «Учить сербский» и начни заново.");
       return;
     }
 
-    await learningService.registerAnswer(user.id, activeState.card.wordId, "again");
-    updateSessionStats(session, activeState.card.wordId, false);
-    activeCards.delete(ctx.from.id);
+    await learningService.registerAnswer(user.id, activeState.item, "again");
+    updateSessionStats(session, activeState.item, false);
+    activeItems.delete(ctx.from.id);
     await ctx.answerCbQuery();
-    await sendNextLearningCard(ctx, learningService, activeCards, activeSessions, {
-      leadText: formatUnknownWordRevealCard(activeState.card.serbianLatin, activeState.card.russianTranslation),
+    await sendNextLearningItem(ctx, learningService, activeItems, activeSessions, {
+      leadText: formatUnknownLearningItem(activeState.item),
       cleanupMessageIds: [activeState.promptMessageId],
     });
   });
 
   bot.action("learn:stop", async (ctx) => {
     if (ctx.from) {
-      const activeState = activeCards.get(ctx.from.id) ?? null;
-      activeCards.delete(ctx.from.id);
+      const activeState = activeItems.get(ctx.from.id) ?? null;
+      activeItems.delete(ctx.from.id);
       const session = activeSessions.get(ctx.from.id) ?? null;
       activeSessions.delete(ctx.from.id);
 
@@ -242,7 +247,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
       return next();
     }
 
-    const activeState = activeCards.get(ctx.from.id);
+    const activeState = activeItems.get(ctx.from.id);
     const session = activeSessions.get(ctx.from.id);
 
     if (!activeState || !session) {
@@ -250,17 +255,17 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     }
 
     const user = await learningService.ensureUser(ctx.from);
-    const checkResult = learningService.checkTranslationAnswer(text, activeState.card.russianTranslation);
+    const checkResult = learningService.checkTranslationAnswer(text, activeState.item.russianTranslation);
     const answer: LearningAnswer = checkResult.isCorrect ? "known" : "again";
 
-    await learningService.registerAnswer(user.id, activeState.card.wordId, answer);
-    updateSessionStats(session, activeState.card.wordId, checkResult.isCorrect);
-    activeCards.delete(ctx.from.id);
+    await learningService.registerAnswer(user.id, activeState.item, answer);
+    updateSessionStats(session, activeState.item, checkResult.isCorrect);
+    activeItems.delete(ctx.from.id);
 
-    await sendNextLearningCard(ctx, learningService, activeCards, activeSessions, {
+    await sendNextLearningItem(ctx, learningService, activeItems, activeSessions, {
       leadText: checkResult.isCorrect
-        ? formatCorrectAnswerResult(activeState.card.serbianLatin, activeState.card.russianTranslation)
-        : formatWrongAnswerResult(text, activeState.card.russianTranslation),
+        ? formatCorrectAnswerResult(activeState.item)
+        : formatWrongAnswerResult(text, activeState.item.russianTranslation),
       cleanupMessageIds: [activeState.promptMessageId, ctx.message.message_id],
     });
   });
@@ -273,13 +278,13 @@ function createLearningSession(totalCards: number): LearningSession {
     correctAnswers: 0,
     wrongAnswers: 0,
     startedAt: Date.now(),
-    servedWordIds: [],
+    servedItemKeys: [],
   };
 }
 
-function updateSessionStats(session: LearningSession, wordId: number, isCorrect: boolean): void {
+function updateSessionStats(session: LearningSession, item: LearningItem, isCorrect: boolean): void {
   session.answeredCards += 1;
-  session.servedWordIds.push(wordId);
+  session.servedItemKeys.push(getLearningItemKey(item));
 
   if (isCorrect) {
     session.correctAnswers += 1;
@@ -288,10 +293,10 @@ function updateSessionStats(session: LearningSession, wordId: number, isCorrect:
   }
 }
 
-async function sendNextLearningCard(
+async function sendNextLearningItem(
   ctx: Context,
   learningService: LearningService,
-  activeCards: Map<number, ActiveLearningCard>,
+  activeItems: Map<number, ActiveLearningItem>,
   activeSessions: Map<number, LearningSession>,
   options: {
     leadText?: string;
@@ -314,7 +319,7 @@ async function sendNextLearningCard(
   }
 
   if (session.answeredCards >= session.totalCards) {
-    activeCards.delete(ctx.from.id);
+    activeItems.delete(ctx.from.id);
     activeSessions.delete(ctx.from.id);
     await ctx.reply(joinMessageParts([
       options.leadText,
@@ -325,14 +330,14 @@ async function sendNextLearningCard(
   }
 
   const user = await learningService.ensureUser(ctx.from);
-  const nextCard = await learningService.getNextCard(user.id, session.servedWordIds);
+  const nextItem = await learningService.getNextItem(user.id, session.servedItemKeys);
 
-  if (!nextCard) {
-    activeCards.delete(ctx.from.id);
+  if (!nextItem) {
+    activeItems.delete(ctx.from.id);
     activeSessions.delete(ctx.from.id);
     await ctx.reply(joinMessageParts([
       options.leadText,
-      "Слова для обучения пока закончились.",
+      "Материал для обучения пока закончился.",
       formatSessionSummary(session, false),
     ]));
     await safeDeleteMessages(ctx, options.cleanupMessageIds ?? []);
@@ -342,32 +347,48 @@ async function sendNextLearningCard(
   const sentMessage = await ctx.reply(
     joinMessageParts([
       options.leadText,
-      formatPromptCard(nextCard.serbianLatin, session),
+      formatPromptItem(nextItem, session),
     ]),
-    createLearningCardKeyboard(nextCard.wordId),
+    createLearningCardKeyboard(getLearningItemKey(nextItem)),
   );
 
-  activeCards.set(ctx.from.id, {
-    card: nextCard,
+  activeItems.set(ctx.from.id, {
+    item: nextItem,
     promptMessageId: sentMessage.message_id,
   });
 
   await safeDeleteMessages(ctx, options.cleanupMessageIds ?? []);
 }
 
-function formatPromptCard(serbianLatin: string, session: LearningSession): string {
+function formatPromptItem(item: LearningItem, session: LearningSession): string {
+  if (item.kind === "word") {
+    return [
+      `Карточка ${session.answeredCards + 1}/${session.totalCards}`,
+      `Слово: ${item.serbianLatin}`,
+      "Напиши перевод на русский сообщением. Если не знаешь слово, нажми кнопку ниже.",
+    ].join("\n");
+  }
+
   return [
     `Карточка ${session.answeredCards + 1}/${session.totalCards}`,
-    `Слово: ${serbianLatin}`,
-    "Напиши перевод на русский сообщением. Если не знаешь слово, нажми кнопку ниже.",
+    `Фраза: ${item.serbianText}`,
+    "Напиши перевод фразы на русский сообщением. Если не знаешь фразу, нажми кнопку ниже.",
   ].join("\n");
 }
 
-function formatCorrectAnswerResult(serbianLatin: string, russianTranslation: string): string {
+function formatCorrectAnswerResult(item: LearningItem): string {
+  if (item.kind === "word") {
+    return [
+      "Верно.",
+      `Слово: ${item.serbianLatin}`,
+      `Перевод: ${item.russianTranslation}`,
+    ].join("\n");
+  }
+
   return [
     "Верно.",
-    `Слово: ${serbianLatin}`,
-    `Перевод: ${russianTranslation}`,
+    `Фраза: ${item.serbianText}`,
+    `Перевод: ${item.russianTranslation}`,
   ].join("\n");
 }
 
@@ -379,11 +400,19 @@ function formatWrongAnswerResult(answer: string, russianTranslation: string): st
   ].join("\n");
 }
 
-function formatUnknownWordRevealCard(serbianLatin: string, russianTranslation: string): string {
+function formatUnknownLearningItem(item: LearningItem): string {
+  if (item.kind === "word") {
+    return [
+      "Слово отмечено на повторение.",
+      `Слово: ${item.serbianLatin}`,
+      `Перевод: ${item.russianTranslation}`,
+    ].join("\n");
+  }
+
   return [
-    "Слово отмечено на повторение.",
-    `Слово: ${serbianLatin}`,
-    `Перевод: ${russianTranslation}`,
+    "Фраза отмечена на повторение.",
+    `Фраза: ${item.serbianText}`,
+    `Перевод: ${item.russianTranslation}`,
   ].join("\n");
 }
 
@@ -401,6 +430,10 @@ function formatSessionSummary(session: LearningSession, interrupted: boolean): s
     `Точность: ${accuracy}%`,
     `Длительность: около ${durationMinutes} мин.`,
   ].join("\n");
+}
+
+function getLearningItemKey(item: LearningItem): string {
+  return `${item.kind}:${item.itemId}`;
 }
 
 function joinMessageParts(parts: Array<string | undefined>): string {

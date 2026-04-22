@@ -50,8 +50,13 @@ export interface CustomSentence {
   userId: number;
   originalText: string;
   correctedText: string | null;
+  russianTranslation: string | null;
   topic: string | null;
   scheduledReviewAt: Date | null;
+  lastReviewedAt: Date | null;
+  correctAnswers: number;
+  wrongAnswers: number;
+  isActive: boolean;
   createdAt: Date;
 }
 

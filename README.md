@@ -1,23 +1,21 @@
 # Montich Bot
 
-Stage 11 adds admin dictionary management commands.
+Stage 12 adds user phrases and sentence repetition.
 
 ## Included in this stage
 
-- Admin-only word management commands
-- Search, add, edit, activate, and deactivate vocabulary entries
-- Vocabulary activation flag so hidden words stop appearing in learning sessions
+- User command to save Serbian phrases with a Russian translation
+- Personal phrase list command
+- Phrase cards inside the regular learning session
+- Independent repetition scheduling for phrases
 
-## Admin commands
+## New commands
 
 ```text
-/admin_words
-/find_word izbor
-/word 12
-/add_word Nova reč - новое слово
-/edit_word 12 | Nova reč | новое слово
-/deactivate_word 12
-/activate_word 12
+/add_phrase Dobar dan svima | добрый день всем
+/my_phrases
 ```
 
-Only the configured admin can use these commands.
+## Learning flow
+
+After adding a phrase, it can appear in the regular mini-session as a phrase card.

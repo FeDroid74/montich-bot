@@ -16,13 +16,45 @@ export function registerAdminDictionaryHandlers(
 
     await ctx.reply([
       "Команды словаря для администратора:",
-      "/find_word izbor",
-      "/word 12",
-      "/add_word Nova reč - новое слово",
-      "/edit_word 12 | Nova reč | новое слово",
-      "/deactivate_word 12",
-      "/activate_word 12",
+      "1. Посмотреть список слов: /list_words",
+      "2. Найти слово по тексту: /find_word izbor",
+      "3. Посмотреть слово по ID: /word 12",
+      "4. Добавить слово: /add_word Nova reč - новое слово",
+      "5. Изменить слово: /edit_word 12 | Nova reč | новое слово",
+      "6. Скрыть слово из обучения: /deactivate_word 12",
+      "7. Вернуть слово в обучение: /activate_word 12",
+      "Подсказка: сначала используй /list_words или /find_word, чтобы узнать ID слова.",
     ].join("\n"));
+  });
+
+  bot.command("list_words", async (ctx) => {
+    const adminUser = await requireAdmin(ctx, learningService);
+
+    if (!adminUser || !hasTextMessage(ctx)) {
+      return;
+    }
+
+    const rawFilter = extractCommandArguments(ctx.message.text, "list_words").toLowerCase();
+    const filter = rawFilter === "active" || rawFilter === "hidden" ? rawFilter : "all";
+    const words = await vocabularyService.listWords(filter);
+
+    if (words.length === 0) {
+      await ctx.reply("Список слов пуст.");
+      return;
+    }
+
+    const header = filter === "all"
+      ? `Всего слов: ${words.length}`
+      : filter === "active"
+        ? `Активных слов: ${words.length}`
+        : `Скрытых слов: ${words.length}`;
+
+    const lines = words.map((word) => `${word.id}. ${word.serbianLatin} -> ${word.russianTranslation} [${word.isActive ? "активно" : "скрыто"}]`);
+    const chunks = chunkLines([header, ...lines], 3300);
+
+    for (const chunk of chunks) {
+      await ctx.reply(chunk);
+    }
   });
 
   bot.command("find_word", async (ctx) => {
@@ -266,4 +298,27 @@ function formatWordDetails(word: {
     `Тема: ${word.topic ?? "-"}`,
     `Пример: ${word.exampleSentence ?? "-"}`,
   ].join("\n");
+}
+
+function chunkLines(lines: string[], maxLength: number): string[] {
+  const chunks: string[] = [];
+  let currentChunk = "";
+
+  for (const line of lines) {
+    const nextChunk = currentChunk ? `${currentChunk}\n${line}` : line;
+
+    if (nextChunk.length > maxLength && currentChunk) {
+      chunks.push(currentChunk);
+      currentChunk = line;
+      continue;
+    }
+
+    currentChunk = nextChunk;
+  }
+
+  if (currentChunk) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
 }

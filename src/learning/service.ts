@@ -1,5 +1,5 @@
 import type { DatabaseAdapter } from "../database/database.js";
-import type { UserRole, WordProgressState } from "../database/models.js";
+import type { CustomSentence, UserRole, WordProgressState } from "../database/models.js";
 
 const DEFAULT_TIMEZONE = "Europe/Belgrade";
 
@@ -16,12 +16,23 @@ export interface LearningUser {
   role: UserRole;
 }
 
-export interface LearningCard {
-  wordId: number;
+export interface LearningWordItem {
+  kind: "word";
+  itemId: number;
   serbianLatin: string;
   russianTranslation: string;
   progressState: WordProgressState | null;
 }
+
+export interface LearningPhraseItem {
+  kind: "phrase";
+  itemId: number;
+  serbianText: string;
+  russianTranslation: string;
+  correctedText: string | null;
+}
+
+export type LearningItem = LearningWordItem | LearningPhraseItem;
 
 export interface ProgressSummary {
   totalWords: number;
@@ -58,15 +69,27 @@ interface LearningUserRow {
   role: UserRole;
 }
 
-interface LearningCardRow {
+interface LearningWordRow {
   word_id: number;
   serbian_latin: string;
   russian_translation: string;
   progress_state: WordProgressState | null;
 }
 
+interface LearningPhraseRow {
+  id: number;
+  original_text: string;
+  corrected_text: string | null;
+  russian_translation: string;
+}
+
 interface WordProgressRow {
   state: WordProgressState;
+  correct_answers: number;
+  wrong_answers: number;
+}
+
+interface PhraseProgressRow {
   correct_answers: number;
   wrong_answers: number;
 }
@@ -141,102 +164,25 @@ export class LearningService {
     return Math.max(5, Math.min(10, settings.dailyGoalMinutes));
   }
 
-  public async getNextCard(userId: number, excludedWordIds: number[] = []): Promise<LearningCard | null> {
-    const result = await this.database.query<LearningCardRow>(
-      `
-        select
-          vw.id as word_id,
-          vw.serbian_latin,
-          vw.russian_translation,
-          uwp.state as progress_state
-        from vocabulary_words vw
-        left join user_word_progress uwp
-          on uwp.word_id = vw.id
-         and uwp.user_id = $1
-        where vw.source = 'admin'
-          and vw.is_active = true
-          and not (vw.id = any($2::bigint[]))
-        order by
-          case
-            when uwp.next_review_at is not null and uwp.next_review_at <= now() then 0
-            when uwp.state in ('learning', 'new') then 1
-            when uwp.user_id is null then 2
-            when uwp.state = 'review' then 3
-            else 4
-          end,
-          case
-            when uwp.next_review_at is not null and uwp.next_review_at <= now() then uwp.next_review_at
-            when uwp.state in ('learning', 'new', 'review') then coalesce(uwp.next_review_at, now())
-            else null
-          end nulls last,
-          random(),
-          vw.id
-        limit 1
-      `,
-      [userId, excludedWordIds],
-    );
+  public async getNextItem(userId: number, excludedItemKeys: string[] = []): Promise<LearningItem | null> {
+    const excludedPhraseIds = extractExcludedIds(excludedItemKeys, "phrase");
+    const nextPhrase = await this.getNextPhrase(userId, excludedPhraseIds);
 
-    const row = result.rows[0];
-
-    if (!row) {
-      return null;
+    if (nextPhrase) {
+      return nextPhrase;
     }
 
-    return {
-      wordId: row.word_id,
-      serbianLatin: row.serbian_latin,
-      russianTranslation: row.russian_translation,
-      progressState: row.progress_state,
-    };
+    const excludedWordIds = extractExcludedIds(excludedItemKeys, "word");
+    return this.getNextWord(userId, excludedWordIds);
   }
 
-  public async registerAnswer(userId: number, wordId: number, answer: LearningAnswer): Promise<void> {
-    const now = new Date();
-    const progressResult = await this.database.query<WordProgressRow>(
-      `
-        select state, correct_answers, wrong_answers
-        from user_word_progress
-        where user_id = $1 and word_id = $2
-        limit 1
-      `,
-      [userId, wordId],
-    );
+  public async registerAnswer(userId: number, item: LearningItem, answer: LearningAnswer): Promise<void> {
+    if (item.kind === "word") {
+      await this.registerWordAnswer(userId, item.itemId, answer);
+      return;
+    }
 
-    const currentProgress = progressResult.rows[0] ?? null;
-    const currentState = currentProgress?.state ?? "new";
-
-    const nextState = answer === "known"
-      ? getKnownNextState(currentState)
-      : "learning";
-
-    const nextReviewAt = answer === "known"
-      ? getKnownNextReviewAt(now, currentState)
-      : addHours(now, 12);
-
-    const correctAnswers = (currentProgress?.correct_answers ?? 0) + (answer === "known" ? 1 : 0);
-    const wrongAnswers = (currentProgress?.wrong_answers ?? 0) + (answer === "again" ? 1 : 0);
-
-    await this.database.query(
-      `
-        insert into user_word_progress (
-          user_id,
-          word_id,
-          state,
-          last_reviewed_at,
-          next_review_at,
-          correct_answers,
-          wrong_answers
-        ) values ($1, $2, $3, $4, $5, $6, $7)
-        on conflict (user_id, word_id)
-        do update set
-          state = excluded.state,
-          last_reviewed_at = excluded.last_reviewed_at,
-          next_review_at = excluded.next_review_at,
-          correct_answers = excluded.correct_answers,
-          wrong_answers = excluded.wrong_answers
-      `,
-      [userId, wordId, nextState, now, nextReviewAt, correctAnswers, wrongAnswers],
-    );
+    await this.registerPhraseAnswer(userId, item.itemId, answer);
   }
 
   public async getProgressSummary(userId: number): Promise<ProgressSummary> {
@@ -404,6 +350,177 @@ export class LearningService {
       [userId, DEFAULT_TIMEZONE],
     );
   }
+
+  private async getNextWord(userId: number, excludedWordIds: number[]): Promise<LearningWordItem | null> {
+    const result = await this.database.query<LearningWordRow>(
+      `
+        select
+          vw.id as word_id,
+          vw.serbian_latin,
+          vw.russian_translation,
+          uwp.state as progress_state
+        from vocabulary_words vw
+        left join user_word_progress uwp
+          on uwp.word_id = vw.id
+         and uwp.user_id = $1
+        where vw.source = 'admin'
+          and vw.is_active = true
+          and not (vw.id = any($2::bigint[]))
+        order by
+          case
+            when uwp.next_review_at is not null and uwp.next_review_at <= now() then 0
+            when uwp.state in ('learning', 'new') then 1
+            when uwp.user_id is null then 2
+            when uwp.state = 'review' then 3
+            else 4
+          end,
+          case
+            when uwp.next_review_at is not null and uwp.next_review_at <= now() then uwp.next_review_at
+            when uwp.state in ('learning', 'new', 'review') then coalesce(uwp.next_review_at, now())
+            else null
+          end nulls last,
+          random(),
+          vw.id
+        limit 1
+      `,
+      [userId, excludedWordIds],
+    );
+
+    const row = result.rows[0];
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      kind: "word",
+      itemId: row.word_id,
+      serbianLatin: row.serbian_latin,
+      russianTranslation: row.russian_translation,
+      progressState: row.progress_state,
+    };
+  }
+
+  private async getNextPhrase(userId: number, excludedPhraseIds: number[]): Promise<LearningPhraseItem | null> {
+    const result = await this.database.query<LearningPhraseRow>(
+      `
+        select
+          id,
+          original_text,
+          corrected_text,
+          russian_translation
+        from custom_sentences
+        where user_id = $1
+          and is_active = true
+          and russian_translation is not null
+          and not (id = any($2::bigint[]))
+          and (scheduled_review_at is null or scheduled_review_at <= now())
+        order by coalesce(scheduled_review_at, created_at), id
+        limit 1
+      `,
+      [userId, excludedPhraseIds],
+    );
+
+    const row = result.rows[0];
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      kind: "phrase",
+      itemId: row.id,
+      serbianText: row.corrected_text ?? row.original_text,
+      russianTranslation: row.russian_translation,
+      correctedText: row.corrected_text,
+    };
+  }
+
+  private async registerWordAnswer(userId: number, wordId: number, answer: LearningAnswer): Promise<void> {
+    const now = new Date();
+    const progressResult = await this.database.query<WordProgressRow>(
+      `
+        select state, correct_answers, wrong_answers
+        from user_word_progress
+        where user_id = $1 and word_id = $2
+        limit 1
+      `,
+      [userId, wordId],
+    );
+
+    const currentProgress = progressResult.rows[0] ?? null;
+    const currentState = currentProgress?.state ?? "new";
+
+    const nextState = answer === "known"
+      ? getKnownNextState(currentState)
+      : "learning";
+
+    const nextReviewAt = answer === "known"
+      ? getKnownNextReviewAt(now, currentState)
+      : addHours(now, 12);
+
+    const correctAnswers = (currentProgress?.correct_answers ?? 0) + (answer === "known" ? 1 : 0);
+    const wrongAnswers = (currentProgress?.wrong_answers ?? 0) + (answer === "again" ? 1 : 0);
+
+    await this.database.query(
+      `
+        insert into user_word_progress (
+          user_id,
+          word_id,
+          state,
+          last_reviewed_at,
+          next_review_at,
+          correct_answers,
+          wrong_answers
+        ) values ($1, $2, $3, $4, $5, $6, $7)
+        on conflict (user_id, word_id)
+        do update set
+          state = excluded.state,
+          last_reviewed_at = excluded.last_reviewed_at,
+          next_review_at = excluded.next_review_at,
+          correct_answers = excluded.correct_answers,
+          wrong_answers = excluded.wrong_answers
+      `,
+      [userId, wordId, nextState, now, nextReviewAt, correctAnswers, wrongAnswers],
+    );
+  }
+
+  private async registerPhraseAnswer(userId: number, phraseId: number, answer: LearningAnswer): Promise<void> {
+    const now = new Date();
+    const phraseResult = await this.database.query<PhraseProgressRow>(
+      `
+        select correct_answers, wrong_answers
+        from custom_sentences
+        where user_id = $1 and id = $2
+        limit 1
+      `,
+      [userId, phraseId],
+    );
+
+    const currentPhrase = phraseResult.rows[0];
+
+    if (!currentPhrase) {
+      return;
+    }
+
+    const correctAnswers = currentPhrase.correct_answers + (answer === "known" ? 1 : 0);
+    const wrongAnswers = currentPhrase.wrong_answers + (answer === "again" ? 1 : 0);
+    const nextReviewAt = answer === "known"
+      ? getPhraseNextReviewAt(now, currentPhrase.correct_answers)
+      : addHours(now, 12);
+
+    await this.database.query(
+      `
+        update custom_sentences
+        set last_reviewed_at = $3,
+            scheduled_review_at = $4,
+            correct_answers = $5,
+            wrong_answers = $6
+        where user_id = $1 and id = $2
+      `,
+      [userId, phraseId, now, nextReviewAt, correctAnswers, wrongAnswers],
+    );
+  }
 }
 
 export function parseReminderTime(value: string): string | null {
@@ -452,6 +569,18 @@ function getKnownNextReviewAt(now: Date, state: WordProgressState): Date {
     default:
       return addDays(now, 1);
   }
+}
+
+function getPhraseNextReviewAt(now: Date, correctAnswers: number): Date {
+  if (correctAnswers <= 0) {
+    return addDays(now, 1);
+  }
+
+  if (correctAnswers === 1) {
+    return addDays(now, 3);
+  }
+
+  return addDays(now, 7);
 }
 
 function addHours(date: Date, hours: number): Date {
@@ -542,4 +671,11 @@ function formatDateKey(date: Date, timezone: string): string {
     month: "2-digit",
     day: "2-digit",
   }).format(date);
+}
+
+function extractExcludedIds(excludedItemKeys: string[], kind: LearningItem["kind"]): number[] {
+  return excludedItemKeys
+    .filter((key) => key.startsWith(`${kind}:`))
+    .map((key) => Number.parseInt(key.slice(kind.length + 1), 10))
+    .filter((id) => Number.isInteger(id));
 }
