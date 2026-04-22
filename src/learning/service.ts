@@ -154,6 +154,7 @@ export class LearningService {
           on uwp.word_id = vw.id
          and uwp.user_id = $1
         where vw.source = 'admin'
+          and vw.is_active = true
           and not (vw.id = any($2::bigint[]))
         order by
           case
@@ -242,7 +243,7 @@ export class LearningService {
     const result = await this.database.query<ProgressSummaryRow>(
       `
         select
-          (select count(*)::int from vocabulary_words where source = 'admin') as total_words,
+          (select count(*)::int from vocabulary_words where source = 'admin' and is_active = true) as total_words,
           (select count(*)::int from user_word_progress where user_id = $1) as tracked_words,
           (select count(*)::int from user_word_progress where user_id = $1 and state in ('new', 'learning', 'review')) as active_words,
           (select count(*)::int from user_word_progress where user_id = $1 and state = 'mastered') as mastered_words,

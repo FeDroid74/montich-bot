@@ -31,6 +31,7 @@ export interface VocabularyWord {
   russianTranslation: string;
   topic: string | null;
   exampleSentence: string | null;
+  isActive: boolean;
   createdAt: Date;
 }
 

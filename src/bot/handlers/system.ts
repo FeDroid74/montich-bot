@@ -1,6 +1,8 @@
 import type { Context, Telegraf } from "telegraf";
 import type { AppContext } from "../../app/context.js";
 import { LearningService, parseReminderTime, type LearningAnswer, type LearningCard } from "../../learning/service.js";
+import { VocabularyService } from "../../vocabulary/service.js";
+import { registerAdminDictionaryHandlers } from "./admin-dictionary.js";
 import { createLearningCardKeyboard } from "../keyboards/learning.js";
 import { MAIN_MENU_BUTTONS, createMainMenuKeyboard } from "../keyboards/main-menu.js";
 
@@ -20,8 +22,11 @@ interface ActiveLearningCard {
 
 export function registerSystemHandlers(bot: Telegraf, context: AppContext): void {
   const learningService = new LearningService(context.database, context.config.bot.adminTelegramId);
+  const vocabularyService = new VocabularyService(context.database);
   const activeCards = new Map<number, ActiveLearningCard>();
   const activeSessions = new Map<number, LearningSession>();
+
+  registerAdminDictionaryHandlers(bot, learningService, vocabularyService);
 
   bot.start(async (ctx) => {
     if (ctx.from) {
@@ -66,7 +71,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
   });
 
   bot.command("goal", async (ctx) => {
-    if (!ctx.from || !("text" in ctx.message)) {
+    if (!ctx.from || !hasTextMessage(ctx)) {
       return;
     }
 
@@ -95,7 +100,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
   });
 
   bot.command("reminder", async (ctx) => {
-    if (!ctx.from || !("text" in ctx.message)) {
+    if (!ctx.from || !hasTextMessage(ctx)) {
       return;
     }
 
@@ -398,10 +403,6 @@ function formatSessionSummary(session: LearningSession, interrupted: boolean): s
   ].join("\n");
 }
 
-type InlineKeyboardCleanupContext = Context & {
-  editMessageReplyMarkup(markup?: undefined): Promise<unknown>;
-};
-
 function joinMessageParts(parts: Array<string | undefined>): string {
   return parts.filter((part): part is string => Boolean(part)).join("\n\n");
 }
@@ -420,10 +421,6 @@ async function safeDeleteMessages(ctx: Context, messageIds: number[]): Promise<v
   }
 }
 
-async function safelyRemoveInlineKeyboard(ctx: InlineKeyboardCleanupContext): Promise<void> {
-  try {
-    await ctx.editMessageReplyMarkup(undefined);
-  } catch {
-    // Ignore stale message edits from Telegram callbacks.
-  }
+function hasTextMessage(ctx: Context): ctx is Context & { message: { text: string } } {
+  return Boolean(ctx.message && "text" in ctx.message);
 }

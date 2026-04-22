@@ -1,31 +1,23 @@
 # Montich Bot
 
-Stage 10 adds smarter session planning and the reminder foundation.
+Stage 11 adds admin dictionary management commands.
 
 ## Included in this stage
 
-- Smarter word selection inside mini-sessions
-- No repeated cards inside the same session
-- Daily goal settings that control session size
-- Reminder settings commands
-- One-off reminder worker for cron-based scheduling
+- Admin-only word management commands
+- Search, add, edit, activate, and deactivate vocabulary entries
+- Vocabulary activation flag so hidden words stop appearing in learning sessions
 
-## New commands
+## Admin commands
 
 ```text
-/settings
-/goal 5
-/goal 10
-/reminder 20:00
-/reminder_off
+/admin_words
+/find_word izbor
+/word 12
+/add_word Nova reč - новое слово
+/edit_word 12 | Nova reč | новое слово
+/deactivate_word 12
+/activate_word 12
 ```
 
-## Reminder worker
-
-Run once manually:
-
-```bash
-npm run reminders:run-once
-```
-
-Later this command can be executed by cron every minute on the VPS.
+Only the configured admin can use these commands.
