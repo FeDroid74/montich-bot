@@ -1,10 +1,8 @@
 import type { Context, Telegraf } from "telegraf";
 import type { AppContext } from "../../app/context.js";
-import { LearningService, type LearningAnswer, type LearningCard } from "../../learning/service.js";
+import { LearningService, parseReminderTime, type LearningAnswer, type LearningCard } from "../../learning/service.js";
 import { createLearningCardKeyboard } from "../keyboards/learning.js";
 import { MAIN_MENU_BUTTONS, createMainMenuKeyboard } from "../keyboards/main-menu.js";
-
-const SESSION_CARD_LIMIT = 10;
 
 interface LearningSession {
   totalCards: number;
@@ -12,6 +10,7 @@ interface LearningSession {
   correctAnswers: number;
   wrongAnswers: number;
   startedAt: number;
+  servedWordIds: number[];
 }
 
 interface ActiveLearningCard {
@@ -47,14 +46,107 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     ].join("\n"));
   });
 
+  bot.command("settings", async (ctx) => {
+    if (!ctx.from) {
+      return;
+    }
+
+    const user = await learningService.ensureUser(ctx.from);
+    const settings = await learningService.getUserSettings(user.id);
+    const sessionCardLimit = await learningService.getSessionCardLimit(user.id);
+
+    await ctx.reply([
+      "Текущие настройки:",
+      `Цель в день: ${settings.dailyGoalMinutes} мин.`,
+      `Карточек в мини-сессии: ${sessionCardLimit}`,
+      `Напоминание: ${settings.reminderTime ?? "выключено"}`,
+      `Часовой пояс: ${settings.timezone}`,
+      "Команды: /goal 5, /goal 10, /reminder 20:00, /reminder_off",
+    ].join("\n"));
+  });
+
+  bot.command("goal", async (ctx) => {
+    if (!ctx.from || !("text" in ctx.message)) {
+      return;
+    }
+
+    const rawValue = ctx.message.text.split(/\s+/)[1];
+
+    if (!rawValue) {
+      await ctx.reply("Использование: /goal 5 или /goal 10");
+      return;
+    }
+
+    const minutes = Number.parseInt(rawValue, 10);
+
+    if (!Number.isInteger(minutes) || minutes < 5 || minutes > 10) {
+      await ctx.reply("Допустимое значение: от 5 до 10 минут.");
+      return;
+    }
+
+    const user = await learningService.ensureUser(ctx.from);
+    const settings = await learningService.updateDailyGoal(user.id, minutes);
+    const sessionCardLimit = await learningService.getSessionCardLimit(user.id);
+
+    await ctx.reply([
+      `Обновил цель: ${settings.dailyGoalMinutes} мин. в день.`,
+      `Теперь мини-сессия будет на ${sessionCardLimit} карточек.`,
+    ].join("\n"));
+  });
+
+  bot.command("reminder", async (ctx) => {
+    if (!ctx.from || !("text" in ctx.message)) {
+      return;
+    }
+
+    const rawTime = ctx.message.text.split(/\s+/)[1];
+    const user = await learningService.ensureUser(ctx.from);
+
+    if (!rawTime) {
+      const settings = await learningService.getUserSettings(user.id);
+      await ctx.reply([
+        `Текущее напоминание: ${settings.reminderTime ?? "выключено"}`,
+        `Часовой пояс: ${settings.timezone}`,
+        "Пример установки: /reminder 20:00",
+      ].join("\n"));
+      return;
+    }
+
+    const reminderTime = parseReminderTime(rawTime);
+
+    if (!reminderTime) {
+      await ctx.reply("Некорректное время. Используй формат HH:MM, например /reminder 20:00");
+      return;
+    }
+
+    const settings = await learningService.setReminder(user.id, reminderTime);
+    await ctx.reply(`Ежедневное напоминание установлено на ${settings.reminderTime} (${settings.timezone}).`);
+  });
+
+  bot.command("reminder_off", async (ctx) => {
+    if (!ctx.from) {
+      return;
+    }
+
+    const user = await learningService.ensureUser(ctx.from);
+    await learningService.disableReminder(user.id);
+    await ctx.reply("Ежедневные напоминания выключены.");
+  });
+
   bot.hears(MAIN_MENU_BUTTONS.learnSerbian, async (ctx) => {
     if (!ctx.from) {
       return;
     }
 
-    activeSessions.set(ctx.from.id, createLearningSession());
+    const user = await learningService.ensureUser(ctx.from);
+    const totalCards = await learningService.getSessionCardLimit(user.id);
+
+    activeSessions.set(ctx.from.id, createLearningSession(totalCards));
     activeCards.delete(ctx.from.id);
-    await sendNextLearningCard(ctx, learningService, activeCards, activeSessions);
+
+    await sendNextLearningCard(ctx, learningService, activeCards, activeSessions, {
+      leadText: `Начинаем мини-сессию: ${totalCards} карточек. Пиши перевод сообщением, а если не знаешь слово, нажимай кнопку ниже.`,
+    });
   });
 
   bot.hears(MAIN_MENU_BUTTONS.progress, async (ctx) => {
@@ -103,7 +195,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     }
 
     await learningService.registerAnswer(user.id, activeState.card.wordId, "again");
-    updateSessionStats(session, false);
+    updateSessionStats(session, activeState.card.wordId, false);
     activeCards.delete(ctx.from.id);
     await ctx.answerCbQuery();
     await sendNextLearningCard(ctx, learningService, activeCards, activeSessions, {
@@ -131,7 +223,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
       return;
     }
 
-    await ctx.answerCbQuery("Сессию остановил.");
+    await ctx.answerCbQuery();
   });
 
   bot.on("text", async (ctx, next) => {
@@ -157,7 +249,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     const answer: LearningAnswer = checkResult.isCorrect ? "known" : "again";
 
     await learningService.registerAnswer(user.id, activeState.card.wordId, answer);
-    updateSessionStats(session, checkResult.isCorrect);
+    updateSessionStats(session, activeState.card.wordId, checkResult.isCorrect);
     activeCards.delete(ctx.from.id);
 
     await sendNextLearningCard(ctx, learningService, activeCards, activeSessions, {
@@ -169,18 +261,20 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
   });
 }
 
-function createLearningSession(): LearningSession {
+function createLearningSession(totalCards: number): LearningSession {
   return {
-    totalCards: SESSION_CARD_LIMIT,
+    totalCards,
     answeredCards: 0,
     correctAnswers: 0,
     wrongAnswers: 0,
     startedAt: Date.now(),
+    servedWordIds: [],
   };
 }
 
-function updateSessionStats(session: LearningSession, isCorrect: boolean): void {
+function updateSessionStats(session: LearningSession, wordId: number, isCorrect: boolean): void {
   session.answeredCards += 1;
+  session.servedWordIds.push(wordId);
 
   if (isCorrect) {
     session.correctAnswers += 1;
@@ -226,7 +320,7 @@ async function sendNextLearningCard(
   }
 
   const user = await learningService.ensureUser(ctx.from);
-  const nextCard = await learningService.getNextCard(user.id);
+  const nextCard = await learningService.getNextCard(user.id, session.servedWordIds);
 
   if (!nextCard) {
     activeCards.delete(ctx.from.id);
@@ -308,14 +402,6 @@ type InlineKeyboardCleanupContext = Context & {
   editMessageReplyMarkup(markup?: undefined): Promise<unknown>;
 };
 
-async function safelyRemoveInlineKeyboard(ctx: InlineKeyboardCleanupContext): Promise<void> {
-  try {
-    await ctx.editMessageReplyMarkup(undefined);
-  } catch {
-    // Ignore stale message edits from Telegram callbacks.
-  }
-}
-
 function joinMessageParts(parts: Array<string | undefined>): string {
   return parts.filter((part): part is string => Boolean(part)).join("\n\n");
 }
@@ -331,5 +417,13 @@ async function safeDeleteMessages(ctx: Context, messageIds: number[]): Promise<v
     } catch {
       // Ignore deletion failures for already deleted or stale messages.
     }
+  }
+}
+
+async function safelyRemoveInlineKeyboard(ctx: InlineKeyboardCleanupContext): Promise<void> {
+  try {
+    await ctx.editMessageReplyMarkup(undefined);
+  } catch {
+    // Ignore stale message edits from Telegram callbacks.
   }
 }

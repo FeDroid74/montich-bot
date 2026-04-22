@@ -1,6 +1,8 @@
 import type { DatabaseAdapter } from "../database/database.js";
 import type { UserRole, WordProgressState } from "../database/models.js";
 
+const DEFAULT_TIMEZONE = "Europe/Belgrade";
+
 export interface TelegramIdentity {
   id: number;
   username?: string;
@@ -34,6 +36,22 @@ export interface TranslationCheckResult {
   acceptedVariants: string[];
 }
 
+export interface LearningSettings {
+  dailyGoalMinutes: number;
+  reminderTime: string | null;
+  timezone: string;
+  lastRemindedAt: Date | null;
+}
+
+export interface ReminderRecipient {
+  userId: number;
+  telegramId: number;
+  dailyGoalMinutes: number;
+  reminderTime: string;
+  timezone: string;
+  lastRemindedAt: Date | null;
+}
+
 interface LearningUserRow {
   id: number;
   telegram_id: number;
@@ -59,6 +77,22 @@ interface ProgressSummaryRow {
   active_words: number;
   mastered_words: number;
   due_words: number;
+}
+
+interface LearningSettingsRow {
+  daily_goal_minutes: number;
+  reminder_time: string | null;
+  timezone: string | null;
+  last_reminded_at: Date | null;
+}
+
+interface ReminderRecipientRow {
+  user_id: number;
+  telegram_id: number;
+  daily_goal_minutes: number;
+  reminder_time: string;
+  timezone: string | null;
+  last_reminded_at: Date | null;
 }
 
 export type LearningAnswer = "known" | "again";
@@ -93,6 +127,7 @@ export class LearningService {
     );
 
     const row = result.rows[0];
+    await this.ensureUserSettings(row.id);
 
     return {
       id: row.id,
@@ -101,7 +136,12 @@ export class LearningService {
     };
   }
 
-  public async getNextCard(userId: number): Promise<LearningCard | null> {
+  public async getSessionCardLimit(userId: number): Promise<number> {
+    const settings = await this.getUserSettings(userId);
+    return Math.max(5, Math.min(10, settings.dailyGoalMinutes));
+  }
+
+  public async getNextCard(userId: number, excludedWordIds: number[] = []): Promise<LearningCard | null> {
     const result = await this.database.query<LearningCardRow>(
       `
         select
@@ -114,18 +154,25 @@ export class LearningService {
           on uwp.word_id = vw.id
          and uwp.user_id = $1
         where vw.source = 'admin'
+          and not (vw.id = any($2::bigint[]))
         order by
           case
             when uwp.next_review_at is not null and uwp.next_review_at <= now() then 0
-            when uwp.user_id is null then 1
-            when uwp.state in ('new', 'learning') then 2
-            else 3
+            when uwp.state in ('learning', 'new') then 1
+            when uwp.user_id is null then 2
+            when uwp.state = 'review' then 3
+            else 4
           end,
-          coalesce(uwp.next_review_at, vw.created_at),
+          case
+            when uwp.next_review_at is not null and uwp.next_review_at <= now() then uwp.next_review_at
+            when uwp.state in ('learning', 'new', 'review') then coalesce(uwp.next_review_at, now())
+            else null
+          end nulls last,
+          random(),
           vw.id
         limit 1
       `,
-      [userId],
+      [userId, excludedWordIds],
     );
 
     const row = result.rows[0];
@@ -215,6 +262,123 @@ export class LearningService {
     };
   }
 
+  public async getUserSettings(userId: number): Promise<LearningSettings> {
+    await this.ensureUserSettings(userId);
+
+    const result = await this.database.query<LearningSettingsRow>(
+      `
+        select
+          daily_goal_minutes,
+          reminder_time,
+          timezone,
+          last_reminded_at
+        from user_settings
+        where user_id = $1
+        limit 1
+      `,
+      [userId],
+    );
+
+    const row = result.rows[0];
+
+    return {
+      dailyGoalMinutes: row.daily_goal_minutes,
+      reminderTime: row.reminder_time,
+      timezone: row.timezone ?? DEFAULT_TIMEZONE,
+      lastRemindedAt: row.last_reminded_at,
+    };
+  }
+
+  public async updateDailyGoal(userId: number, dailyGoalMinutes: number): Promise<LearningSettings> {
+    await this.ensureUserSettings(userId);
+
+    await this.database.query(
+      `
+        update user_settings
+        set daily_goal_minutes = $2,
+            updated_at = now()
+        where user_id = $1
+      `,
+      [userId, dailyGoalMinutes],
+    );
+
+    return this.getUserSettings(userId);
+  }
+
+  public async setReminder(userId: number, reminderTime: string): Promise<LearningSettings> {
+    await this.ensureUserSettings(userId);
+
+    await this.database.query(
+      `
+        update user_settings
+        set reminder_time = $2,
+            timezone = coalesce(timezone, $3),
+            updated_at = now()
+        where user_id = $1
+      `,
+      [userId, reminderTime, DEFAULT_TIMEZONE],
+    );
+
+    return this.getUserSettings(userId);
+  }
+
+  public async disableReminder(userId: number): Promise<LearningSettings> {
+    await this.ensureUserSettings(userId);
+
+    await this.database.query(
+      `
+        update user_settings
+        set reminder_time = null,
+            updated_at = now()
+        where user_id = $1
+      `,
+      [userId],
+    );
+
+    return this.getUserSettings(userId);
+  }
+
+  public async getReminderRecipients(now: Date): Promise<ReminderRecipient[]> {
+    const result = await this.database.query<ReminderRecipientRow>(
+      `
+        select
+          us.user_id,
+          u.telegram_id,
+          us.daily_goal_minutes,
+          us.reminder_time,
+          us.timezone,
+          us.last_reminded_at
+        from user_settings us
+        inner join users u on u.id = us.user_id
+        where us.reminder_time is not null
+        order by us.user_id
+      `,
+    );
+
+    return result.rows
+      .map((row) => ({
+        userId: row.user_id,
+        telegramId: row.telegram_id,
+        dailyGoalMinutes: row.daily_goal_minutes,
+        reminderTime: row.reminder_time,
+        timezone: row.timezone ?? DEFAULT_TIMEZONE,
+        lastRemindedAt: row.last_reminded_at,
+      }))
+      .filter((recipient) => shouldSendReminder(recipient, now));
+  }
+
+  public async markReminderSent(userId: number, sentAt: Date): Promise<void> {
+    await this.database.query(
+      `
+        update user_settings
+        set last_reminded_at = $2,
+            updated_at = now()
+        where user_id = $1
+      `,
+      [userId, sentAt],
+    );
+  }
+
   public checkTranslationAnswer(answer: string, expectedTranslation: string): TranslationCheckResult {
     const normalizedAnswer = normalizeTranslationFragment(answer);
     const acceptedVariants = extractAcceptedTranslations(expectedTranslation);
@@ -224,6 +388,39 @@ export class LearningService {
       acceptedVariants,
     };
   }
+
+  private async ensureUserSettings(userId: number): Promise<void> {
+    await this.database.query(
+      `
+        insert into user_settings (
+          user_id,
+          reminder_time,
+          timezone,
+          daily_goal_minutes
+        ) values ($1, null, $2, 10)
+        on conflict (user_id) do nothing
+      `,
+      [userId, DEFAULT_TIMEZONE],
+    );
+  }
+}
+
+export function parseReminderTime(value: string): string | null {
+  const trimmed = value.trim();
+
+  if (!/^\d{2}:\d{2}$/.test(trimmed)) {
+    return null;
+  }
+
+  const [hoursPart, minutesPart] = trimmed.split(":");
+  const hours = Number.parseInt(hoursPart, 10);
+  const minutes = Number.parseInt(minutesPart, 10);
+
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+
+  return `${hoursPart}:${minutesPart}`;
 }
 
 function getKnownNextState(state: WordProgressState): WordProgressState {
@@ -312,4 +509,36 @@ function normalizeTranslationFragment(value: string): string {
     .replace(/[()\[\]]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function shouldSendReminder(recipient: ReminderRecipient, now: Date): boolean {
+  const localTime = formatTime(now, recipient.timezone);
+
+  if (localTime !== recipient.reminderTime) {
+    return false;
+  }
+
+  if (!recipient.lastRemindedAt) {
+    return true;
+  }
+
+  return formatDateKey(recipient.lastRemindedAt, recipient.timezone) !== formatDateKey(now, recipient.timezone);
+}
+
+function formatTime(date: Date, timezone: string): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: timezone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function formatDateKey(date: Date, timezone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
 }
