@@ -99,10 +99,9 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
 
     const user = await learningService.ensureUser(ctx.from);
     const activeState = activeCards.get(ctx.from.id);
-    const wordId = Number.parseInt(ctx.match[1], 10);
     const session = activeSessions.get(ctx.from.id);
 
-    if (!activeState || activeState.card.wordId !== wordId || !session) {
+    if (!activeState || !session) {
       await ctx.answerCbQuery("Сессия устарела. Нажми «Учить сербский» и начни заново.");
       return;
     }
