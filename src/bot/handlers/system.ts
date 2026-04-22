@@ -206,7 +206,7 @@ async function sendNextLearningCard(
   const session = activeSessions.get(ctx.from.id);
 
   if (!session) {
-    const sentMessage = await ctx.reply(joinMessageParts([
+    await ctx.reply(joinMessageParts([
       options.leadText,
       "Сессия не активна. Нажми «Учить сербский», чтобы начать новую мини-сессию.",
     ]));
@@ -259,7 +259,7 @@ async function sendNextLearningCard(
 function formatPromptCard(serbianLatin: string, session: LearningSession): string {
   return [
     `Карточка ${session.answeredCards + 1}/${session.totalCards}`,
-    `Сербский: ${serbianLatin}`,
+    `Слово: ${serbianLatin}`,
     "Напиши перевод на русский сообщением. Если не знаешь слово, нажми кнопку ниже.",
   ].join("\n");
 }
@@ -267,7 +267,7 @@ function formatPromptCard(serbianLatin: string, session: LearningSession): strin
 function formatCorrectAnswerResult(serbianLatin: string, russianTranslation: string): string {
   return [
     "Верно.",
-    `Сербский: ${serbianLatin}`,
+    `Слово: ${serbianLatin}`,
     `Перевод: ${russianTranslation}`,
   ].join("\n");
 }
@@ -283,7 +283,7 @@ function formatWrongAnswerResult(answer: string, russianTranslation: string): st
 function formatUnknownWordRevealCard(serbianLatin: string, russianTranslation: string): string {
   return [
     "Слово отмечено на повторение.",
-    `Сербский: ${serbianLatin}`,
+    `Слово: ${serbianLatin}`,
     `Перевод: ${russianTranslation}`,
   ].join("\n");
 }
