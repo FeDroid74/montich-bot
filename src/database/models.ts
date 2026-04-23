@@ -16,6 +16,7 @@ export interface UserProfile {
 export interface UserSettings {
   userId: number;
   reminderTime: string | null;
+  reminderIntervalDays: number;
   timezone: string;
   dailyGoalMinutes: number;
   lastRemindedAt: Date | null;

@@ -1,34 +1,54 @@
 import { Markup } from "telegraf";
 
-export function createSettingsPanelKeyboard(settings: {
+export function createSettingsHomeKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("Изменить время обучения", "settings:section:study")],
+    [Markup.button.callback("Настроить напоминание", "settings:section:reminder")],
+    [Markup.button.callback("Обновить", "settings:show")],
+  ]);
+}
+
+export function createStudyTimeKeyboard(settings: {
   dailyGoalMinutes: number;
-  reminderTime: string | null;
 }) {
-  const goalFiveLabel = settings.dailyGoalMinutes === 5 ? "• Цель 5 мин" : "Цель 5 мин";
-  const goalTenLabel = settings.dailyGoalMinutes === 10 ? "• Цель 10 мин" : "Цель 10 мин";
-  const reminderTwentyLabel = settings.reminderTime === "20:00" ? "• Напоминание 20:00" : "Напоминание 20:00";
-  const reminderTwentyOneLabel = settings.reminderTime === "21:00" ? "• Напоминание 21:00" : "Напоминание 21:00";
+  const labels = [5, 10, 15].map((minutes) => settings.dailyGoalMinutes === minutes ? `• ${minutes} мин` : `${minutes} мин`);
 
   return Markup.inlineKeyboard([
     [
-      Markup.button.callback(goalFiveLabel, "settings:goal:5"),
-      Markup.button.callback(goalTenLabel, "settings:goal:10"),
+      Markup.button.callback(labels[0], "settings:goal:5"),
+      Markup.button.callback(labels[1], "settings:goal:10"),
+      Markup.button.callback(labels[2], "settings:goal:15"),
     ],
+    [Markup.button.callback("Назад", "settings:show")],
+  ]);
+}
+
+export function createReminderSettingsKeyboard(settings: {
+  reminderTime: string | null;
+  reminderIntervalDays: number;
+}) {
+  const intervalOne = settings.reminderIntervalDays === 1 ? "• Каждый день" : "Каждый день";
+  const intervalTwo = settings.reminderIntervalDays === 2 ? "• Раз в 2 дня" : "Раз в 2 дня";
+  const intervalThree = settings.reminderIntervalDays === 3 ? "• Раз в 3 дня" : "Раз в 3 дня";
+
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("Указать время", "settings:reminder:prompt_time")],
     [
-      Markup.button.callback(reminderTwentyLabel, "settings:reminder:20:00"),
-      Markup.button.callback(reminderTwentyOneLabel, "settings:reminder:21:00"),
+      Markup.button.callback(intervalOne, "settings:interval:1"),
+      Markup.button.callback(intervalTwo, "settings:interval:2"),
+      Markup.button.callback(intervalThree, "settings:interval:3"),
     ],
     [Markup.button.callback("Выключить напоминания", "settings:reminder:off")],
-    [Markup.button.callback("Обновить", "settings:show")],
+    [Markup.button.callback("Назад", "settings:show")],
   ]);
 }
 
 export function createAdminDictionaryPanelKeyboard() {
   return Markup.inlineKeyboard([
     [
-      Markup.button.callback("Все слова", "admin:list:all"),
       Markup.button.callback("Активные", "admin:list:active"),
+      Markup.button.callback("Скрытые", "admin:list:hidden"),
     ],
-    [Markup.button.callback("Скрытые", "admin:list:hidden")],
+    [Markup.button.callback("Все слова", "admin:list:all")],
   ]);
 }

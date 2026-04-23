@@ -25,14 +25,17 @@ async function main(): Promise<void> {
     }
 
     for (const recipient of recipients) {
-      const sessionCardLimit = Math.max(5, Math.min(10, recipient.dailyGoalMinutes));
+      const studyMinutes = recipient.dailyGoalMinutes;
+      const intervalText = recipient.reminderIntervalDays === 1
+        ? "каждый день"
+        : `раз в ${recipient.reminderIntervalDays} дня`;
 
       await bot.telegram.sendMessage(
         recipient.telegramId,
         [
           "Ежедневное напоминание по сербскому.",
-          `Сегодняшняя цель: ${recipient.dailyGoalMinutes} мин.`,
-          `Мини-сессия: ${sessionCardLimit} карточек.`,
+          `Время обучения: ${studyMinutes} мин.`,
+          `Интервал: ${intervalText}.`,
           "Открой бота и нажми «Учить сербский».",
         ].join("\n"),
         {

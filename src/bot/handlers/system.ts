@@ -7,14 +7,22 @@ import { registerAdminDictionaryHandlers } from "./admin-dictionary.js";
 import { registerPhraseHandlers } from "./phrases.js";
 import { createLearningCardKeyboard } from "../keyboards/learning.js";
 import { MAIN_MENU_BUTTONS, createMainMenuKeyboard } from "../keyboards/main-menu.js";
-import { createAdminDictionaryPanelKeyboard, createSettingsPanelKeyboard } from "../keyboards/panels.js";
+import {
+  createAdminDictionaryPanelKeyboard,
+  createReminderSettingsKeyboard,
+  createSettingsHomeKeyboard,
+  createStudyTimeKeyboard,
+} from "../keyboards/panels.js";
+
+type SettingsSection = "home" | "study" | "reminder";
 
 interface LearningSession {
-  totalCards: number;
+  durationMinutes: number;
   answeredCards: number;
   correctAnswers: number;
   wrongAnswers: number;
   startedAt: number;
+  endsAt: number;
   servedItemKeys: string[];
 }
 
@@ -23,12 +31,17 @@ interface ActiveLearningItem {
   promptMessageId: number;
 }
 
+interface PendingInputState {
+  kind: "reminder_time";
+}
+
 export function registerSystemHandlers(bot: Telegraf, context: AppContext): void {
   const learningService = new LearningService(context.database, context.config.bot.adminTelegramId);
   const vocabularyService = new VocabularyService(context.database);
   const phraseService = new PhraseService(context.database);
   const activeItems = new Map<number, ActiveLearningItem>();
   const activeSessions = new Map<number, LearningSession>();
+  const pendingInputs = new Map<number, PendingInputState>();
 
   registerAdminDictionaryHandlers(bot, learningService, vocabularyService);
   registerPhraseHandlers(bot, learningService, phraseService);
@@ -41,6 +54,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     const user = await learningService.ensureUser(ctx.from);
     activeItems.delete(ctx.from.id);
     activeSessions.delete(ctx.from.id);
+    pendingInputs.delete(ctx.from.id);
 
     await ctx.reply(
       "Бот Montich запущен. Выбирай нужный раздел кнопками ниже: обучение, фразы, настройки или словарь.",
@@ -68,7 +82,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
   });
 
   bot.command("settings", async (ctx) => {
-    await showSettingsPanel(ctx, learningService);
+    await showSettingsPanel(ctx, learningService, "home");
   });
 
   bot.command("goal", async (ctx) => {
@@ -79,25 +93,20 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     const rawValue = ctx.message.text.split(/\s+/)[1];
 
     if (!rawValue) {
-      await ctx.reply("Использование: /goal 5 или /goal 10");
+      await ctx.reply("Использование: /goal 5, /goal 10 или /goal 15");
       return;
     }
 
     const minutes = Number.parseInt(rawValue, 10);
 
-    if (!Number.isInteger(minutes) || minutes < 5 || minutes > 10) {
-      await ctx.reply("Допустимое значение: от 5 до 10 минут.");
+    if (!Number.isInteger(minutes) || ![5, 10, 15].includes(minutes)) {
+      await ctx.reply("Допустимые значения: 5, 10 или 15 минут.");
       return;
     }
 
     const user = await learningService.ensureUser(ctx.from);
-    const settings = await learningService.updateDailyGoal(user.id, minutes);
-    const sessionCardLimit = await learningService.getSessionCardLimit(user.id);
-
-    await ctx.reply([
-      `Обновил цель: ${settings.dailyGoalMinutes} мин. в день.`,
-      `Теперь мини-сессия будет на ${sessionCardLimit} карточек.`,
-    ].join("\n"));
+    await learningService.updateDailyGoal(user.id, minutes);
+    await ctx.reply(`Время обучения обновлено: ${minutes} мин.`);
   });
 
   bot.command("reminder", async (ctx) => {
@@ -112,6 +121,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
       const settings = await learningService.getUserSettings(user.id);
       await ctx.reply([
         `Текущее напоминание: ${settings.reminderTime ?? "выключено"}`,
+        `Интервал: ${formatReminderInterval(settings.reminderIntervalDays)}`,
         `Часовой пояс: ${settings.timezone}`,
         "Пример установки: /reminder 20:00",
       ].join("\n"));
@@ -126,7 +136,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     }
 
     const settings = await learningService.setReminder(user.id, reminderTime);
-    await ctx.reply(`Ежедневное напоминание установлено на ${settings.reminderTime} (${settings.timezone}).`);
+    await ctx.reply(`Время напоминания установлено на ${settings.reminderTime}.`);
   });
 
   bot.command("reminder_off", async (ctx) => {
@@ -145,13 +155,13 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     }
 
     const user = await learningService.ensureUser(ctx.from);
-    const totalCards = await learningService.getSessionCardLimit(user.id);
+    const durationMinutes = await learningService.getSessionDurationMinutes(user.id);
 
-    activeSessions.set(ctx.from.id, createLearningSession(totalCards));
+    activeSessions.set(ctx.from.id, createLearningSession(durationMinutes));
     activeItems.delete(ctx.from.id);
 
     await sendNextLearningItem(ctx, learningService, activeItems, activeSessions, {
-      leadText: `Начинаем мини-сессию: ${totalCards} карточек. Пиши перевод сообщением, а если не знаешь слово или фразу, нажимай кнопку ниже.`,
+      leadText: `Начинаем занятие на ${durationMinutes} мин. Пиши перевод сообщением, а если не знаешь слово или фразу, нажимай кнопку ниже.`,
     });
   });
 
@@ -198,7 +208,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
   });
 
   bot.hears(MAIN_MENU_BUTTONS.settings, async (ctx) => {
-    await showSettingsPanel(ctx, learningService);
+    await showSettingsPanel(ctx, learningService, "home");
   });
 
   bot.hears(MAIN_MENU_BUTTONS.adminDictionary, async (ctx) => {
@@ -230,10 +240,18 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
   });
 
   bot.action("settings:show", async (ctx) => {
-    await showSettingsPanel(ctx, learningService, true);
+    await showSettingsPanel(ctx, learningService, "home", true);
   });
 
-  bot.action(/^settings:goal:(5|10)$/, async (ctx) => {
+  bot.action("settings:section:study", async (ctx) => {
+    await showSettingsPanel(ctx, learningService, "study", true);
+  });
+
+  bot.action("settings:section:reminder", async (ctx) => {
+    await showSettingsPanel(ctx, learningService, "reminder", true);
+  });
+
+  bot.action(/^settings:goal:(5|10|15)$/, async (ctx) => {
     if (!ctx.from) {
       return;
     }
@@ -241,19 +259,30 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     const user = await learningService.ensureUser(ctx.from);
     const minutes = Number.parseInt(ctx.match[1], 10);
     await learningService.updateDailyGoal(user.id, minutes);
-    await ctx.answerCbQuery(`Цель обновлена: ${minutes} мин.`);
-    await showSettingsPanel(ctx, learningService, true);
+    await ctx.answerCbQuery(`Время обучения: ${minutes} мин.`);
+    await showSettingsPanel(ctx, learningService, "study", true);
   });
 
-  bot.action(/^settings:reminder:(20:00|21:00)$/, async (ctx) => {
+  bot.action("settings:reminder:prompt_time", async (ctx) => {
+    if (!ctx.from) {
+      return;
+    }
+
+    pendingInputs.set(ctx.from.id, { kind: "reminder_time" });
+    await ctx.answerCbQuery("Отправь время в формате HH:MM");
+    await showSettingsPanel(ctx, learningService, "reminder", true, true);
+  });
+
+  bot.action(/^settings:interval:(1|2|3)$/, async (ctx) => {
     if (!ctx.from) {
       return;
     }
 
     const user = await learningService.ensureUser(ctx.from);
-    await learningService.setReminder(user.id, ctx.match[1]);
-    await ctx.answerCbQuery(`Напоминание установлено на ${ctx.match[1]}.`);
-    await showSettingsPanel(ctx, learningService, true);
+    const intervalDays = Number.parseInt(ctx.match[1], 10);
+    await learningService.updateReminderInterval(user.id, intervalDays);
+    await ctx.answerCbQuery(`Интервал обновлен: ${formatReminderInterval(intervalDays)}`);
+    await showSettingsPanel(ctx, learningService, "reminder", true);
   });
 
   bot.action("settings:reminder:off", async (ctx) => {
@@ -262,9 +291,10 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     }
 
     const user = await learningService.ensureUser(ctx.from);
+    pendingInputs.delete(ctx.from.id);
     await learningService.disableReminder(user.id);
     await ctx.answerCbQuery("Напоминания выключены.");
-    await showSettingsPanel(ctx, learningService, true);
+    await showSettingsPanel(ctx, learningService, "reminder", true);
   });
 
   bot.action(/^admin:list:(all|active|hidden)$/, async (ctx) => {
@@ -359,7 +389,26 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     }
 
     if (Object.values(MAIN_MENU_BUTTONS).includes(text as (typeof MAIN_MENU_BUTTONS)[keyof typeof MAIN_MENU_BUTTONS])) {
+      pendingInputs.delete(ctx.from.id);
       return next();
+    }
+
+    const pendingInput = pendingInputs.get(ctx.from.id);
+
+    if (pendingInput?.kind === "reminder_time") {
+      const reminderTime = parseReminderTime(text);
+
+      if (!reminderTime) {
+        await ctx.reply("Некорректное время. Отправь время в формате HH:MM, например 20:30");
+        return;
+      }
+
+      const user = await learningService.ensureUser(ctx.from);
+      pendingInputs.delete(ctx.from.id);
+      await learningService.setReminder(user.id, reminderTime);
+      await ctx.reply(`Время напоминания установлено на ${reminderTime}.`);
+      await showSettingsPanel(ctx, learningService, "reminder");
+      return;
     }
 
     const activeState = activeItems.get(ctx.from.id);
@@ -386,13 +435,16 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
   });
 }
 
-function createLearningSession(totalCards: number): LearningSession {
+function createLearningSession(durationMinutes: number): LearningSession {
+  const startedAt = Date.now();
+
   return {
-    totalCards,
+    durationMinutes,
     answeredCards: 0,
     correctAnswers: 0,
     wrongAnswers: 0,
-    startedAt: Date.now(),
+    startedAt,
+    endsAt: startedAt + durationMinutes * 60 * 1000,
     servedItemKeys: [],
   };
 }
@@ -427,13 +479,13 @@ async function sendNextLearningItem(
   if (!session) {
     await ctx.reply(joinMessageParts([
       options.leadText,
-      "Сессия не активна. Нажми «Учить сербский», чтобы начать новую мини-сессию.",
+      "Сессия не активна. Нажми «Учить сербский», чтобы начать новое занятие.",
     ]));
     await safeDeleteMessages(ctx, options.cleanupMessageIds ?? []);
     return;
   }
 
-  if (session.answeredCards >= session.totalCards) {
+  if (session.answeredCards > 0 && Date.now() >= session.endsAt) {
     activeItems.delete(ctx.from.id);
     activeSessions.delete(ctx.from.id);
     await ctx.reply(joinMessageParts([
@@ -464,7 +516,7 @@ async function sendNextLearningItem(
       options.leadText,
       formatPromptItem(nextItem, session),
     ]),
-    createLearningCardKeyboard(getLearningItemKey(nextItem)),
+    createLearningCardKeyboard(getLearningItemKey(nextItem), nextItem.kind),
   );
 
   activeItems.set(ctx.from.id, {
@@ -475,16 +527,25 @@ async function sendNextLearningItem(
   await safeDeleteMessages(ctx, options.cleanupMessageIds ?? []);
 }
 
-async function showSettingsPanel(ctx: Context, learningService: LearningService, replaceMessage = false): Promise<void> {
+async function showSettingsPanel(
+  ctx: Context,
+  learningService: LearningService,
+  section: SettingsSection,
+  replaceMessage = false,
+  awaitingTimeInput = false,
+): Promise<void> {
   if (!ctx.from) {
     return;
   }
 
   const user = await learningService.ensureUser(ctx.from);
   const settings = await learningService.getUserSettings(user.id);
-  const sessionCardLimit = await learningService.getSessionCardLimit(user.id);
-  const text = formatSettingsPanel(settings, sessionCardLimit);
-  const keyboard = createSettingsPanelKeyboard(settings);
+  const text = formatSettingsPanel(section, settings, awaitingTimeInput);
+  const keyboard = section === "home"
+    ? createSettingsHomeKeyboard()
+    : section === "study"
+      ? createStudyTimeKeyboard(settings)
+      : createReminderSettingsKeyboard(settings);
 
   if (replaceMessage && canEditMessageText(ctx)) {
     await ctx.editMessageText(text, keyboard);
@@ -495,16 +556,20 @@ async function showSettingsPanel(ctx: Context, learningService: LearningService,
 }
 
 function formatPromptItem(item: LearningItem, session: LearningSession): string {
+  const remainingMinutes = Math.max(1, Math.ceil((session.endsAt - Date.now()) / 60000));
+
   if (item.kind === "word") {
     return [
-      `Карточка ${session.answeredCards + 1}/${session.totalCards}`,
+      `Режим: ${session.durationMinutes} мин.`,
+      `Осталось: примерно ${remainingMinutes} мин.`,
       `Слово: ${item.serbianLatin}`,
       "Напиши перевод на русский сообщением. Если не знаешь слово, нажми кнопку ниже.",
     ].join("\n");
   }
 
   return [
-    `Карточка ${session.answeredCards + 1}/${session.totalCards}`,
+    `Режим: ${session.durationMinutes} мин.`,
+    `Осталось: примерно ${remainingMinutes} мин.`,
     `Фраза: ${item.serbianText}`,
     "Напиши перевод фразы на русский сообщением. Если не знаешь фразу, нажми кнопку ниже.",
   ].join("\n");
@@ -554,26 +619,50 @@ function formatSessionSummary(session: LearningSession, interrupted: boolean): s
   const accuracy = session.answeredCards > 0
     ? Math.round((session.correctAnswers / session.answeredCards) * 100)
     : 0;
-  const durationMinutes = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
+  const actualDurationMinutes = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
 
   return [
-    interrupted ? "Мини-сессия остановлена." : "Мини-сессия завершена.",
-    `Карточек отвечено: ${session.answeredCards}/${session.totalCards}`,
+    interrupted ? "Занятие остановлено." : "Занятие завершено.",
+    `Время обучения: ${session.durationMinutes} мин.`,
+    `Отвечено элементов: ${session.answeredCards}`,
     `Верных ответов: ${session.correctAnswers}`,
     `На повторение: ${session.wrongAnswers}`,
     `Точность: ${accuracy}%`,
-    `Длительность: около ${durationMinutes} мин.`,
+    `Фактическая длительность: около ${actualDurationMinutes} мин.`,
   ].join("\n");
 }
 
-function formatSettingsPanel(settings: LearningSettings, sessionCardLimit: number): string {
+function formatSettingsPanel(
+  section: SettingsSection,
+  settings: LearningSettings,
+  awaitingTimeInput: boolean,
+): string {
+  if (section === "study") {
+    return [
+      "Изменить время обучения:",
+      `Сейчас: ${settings.dailyGoalMinutes} мин.`,
+      "Выбери удобную длительность занятия кнопками ниже.",
+    ].join("\n");
+  }
+
+  if (section === "reminder") {
+    return [
+      "Настроить напоминание:",
+      `Текущее время: ${settings.reminderTime ?? "не задано"}`,
+      `Интервал: ${formatReminderInterval(settings.reminderIntervalDays)}`,
+      awaitingTimeInput
+        ? "Теперь отправь время сообщением в формате HH:MM, например 20:30."
+        : "Ниже можно задать время, выбрать интервал или выключить напоминания.",
+    ].join("\n");
+  }
+
   return [
     "Настройки обучения:",
-    `Цель в день: ${settings.dailyGoalMinutes} мин.`,
-    `Карточек в мини-сессии: ${sessionCardLimit}`,
+    `Время обучения: ${settings.dailyGoalMinutes} мин.`,
     `Напоминание: ${settings.reminderTime ?? "выключено"}`,
+    `Интервал: ${formatReminderInterval(settings.reminderIntervalDays)}`,
     `Часовой пояс: ${settings.timezone}`,
-    "Ниже можно быстро поменять цель и напоминания кнопками.",
+    "Открой нужный раздел кнопками ниже.",
   ].join("\n");
 }
 
@@ -589,6 +678,14 @@ function formatAdminDictionaryPanel(): string {
     "/activate_word 12",
     "/add_word Nova reč - новое слово",
   ].join("\n");
+}
+
+function formatReminderInterval(intervalDays: number): string {
+  if (intervalDays === 1) {
+    return "каждый день";
+  }
+
+  return `раз в ${intervalDays} дня`;
 }
 
 function getLearningItemKey(item: LearningItem): string {

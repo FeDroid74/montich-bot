@@ -50,6 +50,7 @@ export interface TranslationCheckResult {
 export interface LearningSettings {
   dailyGoalMinutes: number;
   reminderTime: string | null;
+  reminderIntervalDays: number;
   timezone: string;
   lastRemindedAt: Date | null;
 }
@@ -59,6 +60,7 @@ export interface ReminderRecipient {
   telegramId: number;
   dailyGoalMinutes: number;
   reminderTime: string;
+  reminderIntervalDays: number;
   timezone: string;
   lastRemindedAt: Date | null;
 }
@@ -105,6 +107,7 @@ interface ProgressSummaryRow {
 interface LearningSettingsRow {
   daily_goal_minutes: number;
   reminder_time: string | null;
+  reminder_interval_days: number;
   timezone: string | null;
   last_reminded_at: Date | null;
 }
@@ -114,6 +117,7 @@ interface ReminderRecipientRow {
   telegram_id: number;
   daily_goal_minutes: number;
   reminder_time: string;
+  reminder_interval_days: number;
   timezone: string | null;
   last_reminded_at: Date | null;
 }
@@ -159,9 +163,9 @@ export class LearningService {
     };
   }
 
-  public async getSessionCardLimit(userId: number): Promise<number> {
+  public async getSessionDurationMinutes(userId: number): Promise<number> {
     const settings = await this.getUserSettings(userId);
-    return Math.max(5, Math.min(10, settings.dailyGoalMinutes));
+    return normalizeStudyMinutes(settings.dailyGoalMinutes);
   }
 
   public async getNextItem(userId: number, excludedItemKeys: string[] = []): Promise<LearningItem | null> {
@@ -217,6 +221,7 @@ export class LearningService {
         select
           daily_goal_minutes,
           reminder_time,
+          reminder_interval_days,
           timezone,
           last_reminded_at
         from user_settings
@@ -231,6 +236,7 @@ export class LearningService {
     return {
       dailyGoalMinutes: row.daily_goal_minutes,
       reminderTime: row.reminder_time,
+      reminderIntervalDays: row.reminder_interval_days,
       timezone: row.timezone ?? DEFAULT_TIMEZONE,
       lastRemindedAt: row.last_reminded_at,
     };
@@ -239,6 +245,8 @@ export class LearningService {
   public async updateDailyGoal(userId: number, dailyGoalMinutes: number): Promise<LearningSettings> {
     await this.ensureUserSettings(userId);
 
+    const normalizedMinutes = normalizeStudyMinutes(dailyGoalMinutes);
+
     await this.database.query(
       `
         update user_settings
@@ -246,7 +254,7 @@ export class LearningService {
             updated_at = now()
         where user_id = $1
       `,
-      [userId, dailyGoalMinutes],
+      [userId, normalizedMinutes],
     );
 
     return this.getUserSettings(userId);
@@ -264,6 +272,24 @@ export class LearningService {
         where user_id = $1
       `,
       [userId, reminderTime, DEFAULT_TIMEZONE],
+    );
+
+    return this.getUserSettings(userId);
+  }
+
+  public async updateReminderInterval(userId: number, reminderIntervalDays: number): Promise<LearningSettings> {
+    await this.ensureUserSettings(userId);
+
+    const normalizedInterval = normalizeReminderIntervalDays(reminderIntervalDays);
+
+    await this.database.query(
+      `
+        update user_settings
+        set reminder_interval_days = $2,
+            updated_at = now()
+        where user_id = $1
+      `,
+      [userId, normalizedInterval],
     );
 
     return this.getUserSettings(userId);
@@ -293,6 +319,7 @@ export class LearningService {
           u.telegram_id,
           us.daily_goal_minutes,
           us.reminder_time,
+          us.reminder_interval_days,
           us.timezone,
           us.last_reminded_at
         from user_settings us
@@ -308,6 +335,7 @@ export class LearningService {
         telegramId: row.telegram_id,
         dailyGoalMinutes: row.daily_goal_minutes,
         reminderTime: row.reminder_time,
+        reminderIntervalDays: row.reminder_interval_days,
         timezone: row.timezone ?? DEFAULT_TIMEZONE,
         lastRemindedAt: row.last_reminded_at,
       }))
@@ -342,9 +370,10 @@ export class LearningService {
         insert into user_settings (
           user_id,
           reminder_time,
+          reminder_interval_days,
           timezone,
           daily_goal_minutes
-        ) values ($1, null, $2, 10)
+        ) values ($1, null, 1, $2, 10)
         on conflict (user_id) do nothing
       `,
       [userId, DEFAULT_TIMEZONE],
@@ -652,7 +681,38 @@ function shouldSendReminder(recipient: ReminderRecipient, now: Date): boolean {
     return true;
   }
 
-  return formatDateKey(recipient.lastRemindedAt, recipient.timezone) !== formatDateKey(now, recipient.timezone);
+  const lastDateKey = formatDateKey(recipient.lastRemindedAt, recipient.timezone);
+  const currentDateKey = formatDateKey(now, recipient.timezone);
+
+  if (lastDateKey === currentDateKey) {
+    return false;
+  }
+
+  return getDateKeyDistanceInDays(lastDateKey, currentDateKey) >= recipient.reminderIntervalDays;
+}
+
+function normalizeStudyMinutes(value: number): number {
+  if (value >= 15) {
+    return 15;
+  }
+
+  if (value <= 5) {
+    return 5;
+  }
+
+  return 10;
+}
+
+function normalizeReminderIntervalDays(value: number): number {
+  if (value <= 1) {
+    return 1;
+  }
+
+  if (value >= 3) {
+    return 3;
+  }
+
+  return 2;
 }
 
 function formatTime(date: Date, timezone: string): string {
@@ -678,4 +738,13 @@ function extractExcludedIds(excludedItemKeys: string[], kind: LearningItem["kind
     .filter((key) => key.startsWith(`${kind}:`))
     .map((key) => Number.parseInt(key.slice(kind.length + 1), 10))
     .filter((id) => Number.isInteger(id));
+}
+
+function getDateKeyDistanceInDays(fromDateKey: string, toDateKey: string): number {
+  const [fromYear, fromMonth, fromDay] = fromDateKey.split("-").map((part) => Number.parseInt(part, 10));
+  const [toYear, toMonth, toDay] = toDateKey.split("-").map((part) => Number.parseInt(part, 10));
+  const fromUtc = Date.UTC(fromYear, fromMonth - 1, fromDay);
+  const toUtc = Date.UTC(toYear, toMonth - 1, toDay);
+
+  return Math.max(0, Math.round((toUtc - fromUtc) / (24 * 60 * 60 * 1000)));
 }
