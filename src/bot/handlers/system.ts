@@ -1,12 +1,13 @@
 import type { Context, Telegraf } from "telegraf";
 import type { AppContext } from "../../app/context.js";
-import { LearningService, parseReminderTime, type LearningAnswer, type LearningItem } from "../../learning/service.js";
+import { LearningService, parseReminderTime, type LearningAnswer, type LearningItem, type LearningSettings } from "../../learning/service.js";
 import { PhraseService } from "../../phrases/service.js";
 import { VocabularyService } from "../../vocabulary/service.js";
 import { registerAdminDictionaryHandlers } from "./admin-dictionary.js";
 import { registerPhraseHandlers } from "./phrases.js";
 import { createLearningCardKeyboard } from "../keyboards/learning.js";
 import { MAIN_MENU_BUTTONS, createMainMenuKeyboard } from "../keyboards/main-menu.js";
+import { createAdminDictionaryPanelKeyboard, createSettingsPanelKeyboard } from "../keyboards/panels.js";
 
 interface LearningSession {
   totalCards: number;
@@ -33,16 +34,27 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
   registerPhraseHandlers(bot, learningService, phraseService);
 
   bot.start(async (ctx) => {
-    if (ctx.from) {
-      await learningService.ensureUser(ctx.from);
-      activeItems.delete(ctx.from.id);
-      activeSessions.delete(ctx.from.id);
+    if (!ctx.from) {
+      return;
     }
 
+    const user = await learningService.ensureUser(ctx.from);
+    activeItems.delete(ctx.from.id);
+    activeSessions.delete(ctx.from.id);
+
     await ctx.reply(
-      "Бот Montich запущен. Можно учить слова, фразы, смотреть прогресс и постепенно расширять функциональность.",
-      createMainMenuKeyboard(),
+      "Бот Montich запущен. Выбирай нужный раздел кнопками ниже: обучение, фразы, настройки или словарь.",
+      createMainMenuKeyboard(user.role === "admin"),
     );
+  });
+
+  bot.command("menu", async (ctx) => {
+    if (!ctx.from) {
+      return;
+    }
+
+    const user = await learningService.ensureUser(ctx.from);
+    await ctx.reply("Главное меню обновлено.", createMainMenuKeyboard(user.role === "admin"));
   });
 
   bot.command("health", async (ctx) => {
@@ -56,22 +68,7 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
   });
 
   bot.command("settings", async (ctx) => {
-    if (!ctx.from) {
-      return;
-    }
-
-    const user = await learningService.ensureUser(ctx.from);
-    const settings = await learningService.getUserSettings(user.id);
-    const sessionCardLimit = await learningService.getSessionCardLimit(user.id);
-
-    await ctx.reply([
-      "Текущие настройки:",
-      `Цель в день: ${settings.dailyGoalMinutes} мин.`,
-      `Карточек в мини-сессии: ${sessionCardLimit}`,
-      `Напоминание: ${settings.reminderTime ?? "выключено"}`,
-      `Часовой пояс: ${settings.timezone}`,
-      "Команды: /goal 5, /goal 10, /reminder 20:00, /reminder_off",
-    ].join("\n"));
+    await showSettingsPanel(ctx, learningService);
   });
 
   bot.command("goal", async (ctx) => {
@@ -176,6 +173,49 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     ].join("\n"));
   });
 
+  bot.hears(MAIN_MENU_BUTTONS.phrases, async (ctx) => {
+    if (!ctx.from) {
+      return;
+    }
+
+    const user = await learningService.ensureUser(ctx.from);
+    const phrases = await phraseService.listPhrases(user.id, 10);
+
+    if (phrases.length === 0) {
+      await ctx.reply([
+        "У тебя пока нет сохраненных фраз.",
+        "Добавь первую фразу командой:",
+        "/add_phrase Dobar dan svima | добрый день всем",
+      ].join("\n"));
+      return;
+    }
+
+    await ctx.reply([
+      `Последние фразы: ${phrases.length}`,
+      ...phrases.map((phrase) => `${phrase.id}. ${phrase.originalText} -> ${phrase.russianTranslation ?? "-"}`),
+      "Чтобы добавить новую фразу, используй /add_phrase Фраза | перевод",
+    ].join("\n"));
+  });
+
+  bot.hears(MAIN_MENU_BUTTONS.settings, async (ctx) => {
+    await showSettingsPanel(ctx, learningService);
+  });
+
+  bot.hears(MAIN_MENU_BUTTONS.adminDictionary, async (ctx) => {
+    if (!ctx.from) {
+      return;
+    }
+
+    const user = await learningService.ensureUser(ctx.from);
+
+    if (user.role !== "admin") {
+      await ctx.reply("Раздел доступен только администратору.");
+      return;
+    }
+
+    await ctx.reply(formatAdminDictionaryPanel(), createAdminDictionaryPanelKeyboard());
+  });
+
   bot.hears(MAIN_MENU_BUTTONS.faq, async (ctx) => {
     await ctx.reply("Раздел FAQ будет следующим этапом. Сейчас приоритет на обучение языку.");
   });
@@ -187,6 +227,81 @@ export function registerSystemHandlers(bot: Telegraf, context: AppContext): void
     }
 
     await ctx.reply("Ссылка на поддержку проекта пока не настроена.");
+  });
+
+  bot.action("settings:show", async (ctx) => {
+    await showSettingsPanel(ctx, learningService, true);
+  });
+
+  bot.action(/^settings:goal:(5|10)$/, async (ctx) => {
+    if (!ctx.from) {
+      return;
+    }
+
+    const user = await learningService.ensureUser(ctx.from);
+    const minutes = Number.parseInt(ctx.match[1], 10);
+    await learningService.updateDailyGoal(user.id, minutes);
+    await ctx.answerCbQuery(`Цель обновлена: ${minutes} мин.`);
+    await showSettingsPanel(ctx, learningService, true);
+  });
+
+  bot.action(/^settings:reminder:(20:00|21:00)$/, async (ctx) => {
+    if (!ctx.from) {
+      return;
+    }
+
+    const user = await learningService.ensureUser(ctx.from);
+    await learningService.setReminder(user.id, ctx.match[1]);
+    await ctx.answerCbQuery(`Напоминание установлено на ${ctx.match[1]}.`);
+    await showSettingsPanel(ctx, learningService, true);
+  });
+
+  bot.action("settings:reminder:off", async (ctx) => {
+    if (!ctx.from) {
+      return;
+    }
+
+    const user = await learningService.ensureUser(ctx.from);
+    await learningService.disableReminder(user.id);
+    await ctx.answerCbQuery("Напоминания выключены.");
+    await showSettingsPanel(ctx, learningService, true);
+  });
+
+  bot.action(/^admin:list:(all|active|hidden)$/, async (ctx) => {
+    if (!ctx.from) {
+      return;
+    }
+
+    const user = await learningService.ensureUser(ctx.from);
+
+    if (user.role !== "admin") {
+      await ctx.answerCbQuery("Раздел доступен только администратору.");
+      return;
+    }
+
+    const filter = ctx.match[1] as "all" | "active" | "hidden";
+    const words = await vocabularyService.listWords(filter);
+    await ctx.answerCbQuery();
+
+    if (words.length === 0) {
+      await ctx.reply("Список слов пуст.");
+      return;
+    }
+
+    const header = filter === "all"
+      ? `Всего слов: ${words.length}`
+      : filter === "active"
+        ? `Активных слов: ${words.length}`
+        : `Скрытых слов: ${words.length}`;
+
+    const chunks = chunkLines([
+      header,
+      ...words.map((word) => `${word.id}. ${word.serbianLatin} -> ${word.russianTranslation} [${word.isActive ? "активно" : "скрыто"}]`),
+    ], 3300);
+
+    for (const chunk of chunks) {
+      await ctx.reply(chunk);
+    }
   });
 
   bot.action(/^learn:unknown:(word|phrase):(\d+)$/, async (ctx) => {
@@ -360,6 +475,25 @@ async function sendNextLearningItem(
   await safeDeleteMessages(ctx, options.cleanupMessageIds ?? []);
 }
 
+async function showSettingsPanel(ctx: Context, learningService: LearningService, replaceMessage = false): Promise<void> {
+  if (!ctx.from) {
+    return;
+  }
+
+  const user = await learningService.ensureUser(ctx.from);
+  const settings = await learningService.getUserSettings(user.id);
+  const sessionCardLimit = await learningService.getSessionCardLimit(user.id);
+  const text = formatSettingsPanel(settings, sessionCardLimit);
+  const keyboard = createSettingsPanelKeyboard(settings);
+
+  if (replaceMessage && canEditMessageText(ctx)) {
+    await ctx.editMessageText(text, keyboard);
+    return;
+  }
+
+  await ctx.reply(text, keyboard);
+}
+
 function formatPromptItem(item: LearningItem, session: LearningSession): string {
   if (item.kind === "word") {
     return [
@@ -432,12 +566,60 @@ function formatSessionSummary(session: LearningSession, interrupted: boolean): s
   ].join("\n");
 }
 
+function formatSettingsPanel(settings: LearningSettings, sessionCardLimit: number): string {
+  return [
+    "Настройки обучения:",
+    `Цель в день: ${settings.dailyGoalMinutes} мин.`,
+    `Карточек в мини-сессии: ${sessionCardLimit}`,
+    `Напоминание: ${settings.reminderTime ?? "выключено"}`,
+    `Часовой пояс: ${settings.timezone}`,
+    "Ниже можно быстро поменять цель и напоминания кнопками.",
+  ].join("\n");
+}
+
+function formatAdminDictionaryPanel(): string {
+  return [
+    "Админ-словарь:",
+    "1. Сначала открой список слов кнопками ниже.",
+    "2. Найди нужный ID.",
+    "3. Потом используй команды редактирования:",
+    "/word 12",
+    "/edit_word 12 | Nova reč | новое слово",
+    "/deactivate_word 12",
+    "/activate_word 12",
+    "/add_word Nova reč - новое слово",
+  ].join("\n");
+}
+
 function getLearningItemKey(item: LearningItem): string {
   return `${item.kind}:${item.itemId}`;
 }
 
 function joinMessageParts(parts: Array<string | undefined>): string {
   return parts.filter((part): part is string => Boolean(part)).join("\n\n");
+}
+
+function chunkLines(lines: string[], maxLength: number): string[] {
+  const chunks: string[] = [];
+  let currentChunk = "";
+
+  for (const line of lines) {
+    const nextChunk = currentChunk ? `${currentChunk}\n${line}` : line;
+
+    if (nextChunk.length > maxLength && currentChunk) {
+      chunks.push(currentChunk);
+      currentChunk = line;
+      continue;
+    }
+
+    currentChunk = nextChunk;
+  }
+
+  if (currentChunk) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
 }
 
 async function safeDeleteMessages(ctx: Context, messageIds: number[]): Promise<void> {
@@ -456,4 +638,8 @@ async function safeDeleteMessages(ctx: Context, messageIds: number[]): Promise<v
 
 function hasTextMessage(ctx: Context): ctx is Context & { message: { text: string } } {
   return Boolean(ctx.message && "text" in ctx.message);
+}
+
+function canEditMessageText(ctx: Context): ctx is Context & { editMessageText: (text: string, extra?: unknown) => Promise<unknown> } {
+  return typeof (ctx as { editMessageText?: unknown }).editMessageText === "function";
 }
